@@ -1,0 +1,48 @@
+/**
+ * @ringtail/ui token CSS — the "Night Shift" system as raw custom properties.
+ * :root = Moonlit (light, default); .graveyard = the dark nocturne. Load once
+ * (Storybook preview / the dashboard shell). Fonts are declared as stacks only —
+ * Clash Display / Satoshi / JetBrains Mono self-host when the woff2 files land;
+ * until then they fall back gracefully to system UI + mono.
+ */
+
+:root {
+  --bg: #f6eddd;
+  --surface: #fcf6ec;
+  --ink: #211a1e;
+  --ink-soft: #6e5e52;
+  --amber: #f5a524;
+  --amber-deep: #d6851a;
+  --grey: #aa9d8c;
+  --acid: #e8ff4b;
+  --hot: #ff5c8a;
+  --green: #37b27e;
+  --berry: #8a3a63;
+  --line: #e4d8c4;
+  --danger: #c0432e;
+
+  --font-display: "Clash Display", "Satoshi", system-ui, sans-serif;
+  --font-ui: "Satoshi", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-pill: 999px;
+
+  --shadow-soft: 0 8px 24px -10px rgba(33, 26, 30, 0.2);
+  --shadow-float: 0 20px 44px -20px rgba(33, 26, 30, 0.28);
+
+  --ease-effortless: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-quick: 150ms;
+  --dur-base: 250ms;
+  --dur-slow: 400ms;
+}
+
+.graveyard {
+  --bg: #17110f;
+  --surface: #211a1e;
+  --ink: #f6eddd;
+  --ink-soft: #aa9d8c;
+  --line: #33262a;
+}
