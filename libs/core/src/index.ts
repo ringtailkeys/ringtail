@@ -1,42 +1,50 @@
 import { existsSync, readFileSync } from "node:fs";
 import { getEnv } from "@ringtail/config";
-import { RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
+import { getRecipe, RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
 import { syncCredential, type Environment } from "@ringtail/sinks";
 import { putCredential, readStore } from "@ringtail/store";
 
-/**
- * @ringtail/core — the engine. The whole product is one linear state machine:
- *
- *   idle → acquire → validateScopes → provision → sync → done   (or → error)
- *
- * Every provider walks the same path; recipes (@ringtail/recipes) supply the
- * provider-specific bits, sinks (@ringtail/sinks) land the keys, store
- * (@ringtail/store) persists them. This file imports all four libs — proving
- * the boundary law: core (a lib) depends only DOWN on other libs, never up.
- */
-export type ProvisionState =
-  | "idle"
-  | "acquire"
-  | "validateScopes"
-  | "provision"
-  | "sync"
-  | "done"
-  | "error";
+export type { Environment } from "@ringtail/sinks";
 
-export interface Provisioner {
-  readonly state: ProvisionState;
-  acquire(recipeId: string): Promise<void>;
-  validateScopes(): Promise<ValidateResult>;
-  provision(): Promise<Record<string, string>>;
-  sync(env: Environment): Promise<void>;
-}
+/**
+ * @ringtail/core — the engine. Every provider walks ONE credential lifecycle:
+ *
+ *   missing → needs-consent → validating → (validated | wrong-scope)
+ *                                        → provisioning → synced
+ *
+ * validate runs AFTER mint (probe the token you actually got, not the one you
+ * asked for). recipes (@ringtail/recipes) supply the provider bits, sinks land
+ * the keys, store persists them. core imports all three libs — proving the
+ * boundary law: core (a lib) depends only DOWN on other libs, never up.
+ *
+ * NEVER emit secret VALUES. Status, reports, and JSON carry key NAMES + state.
+ */
+
+/**
+ * The credential lifecycle vocabulary — matches @ringtail/ui's CredentialStatus
+ * exactly (the cockpit renders these). Redeclared here (not imported) so core
+ * stays free of the React UI lib; the two string unions are kept in lockstep.
+ */
+export type CredentialStatus =
+  | "missing"
+  | "needs-consent"
+  | "validating"
+  | "validated"
+  | "wrong-scope"
+  | "provisioning"
+  | "synced";
 
 /** The default environment to sync into, from validated config. */
 export function defaultEnvironment(): Environment {
   return getEnv().INFISICAL_ENVIRONMENT;
 }
 
-/** Per-cell state in the providers × envs connection grid the dashboard renders. */
+const ENVIRONMENTS: Environment[] = ["dev", "staging", "prod"];
+
+// ── connection grid (dashboard /api/status) ──────────────────────────────────
+
+/** Per-cell state in the providers × envs grid the dashboard renders. A coarse
+ * 3-state view (the cockpit's finer CredentialStatus is the per-provisioning state). */
 export type ConnStatus = "connected" | "missing" | "needs-consent";
 
 export interface ProviderStatus {
@@ -47,16 +55,14 @@ export interface ProviderStatus {
   envs: Record<Environment, ConnStatus>;
 }
 
-const ENVIRONMENTS: Environment[] = ["dev", "staging", "prod"];
-
 /**
- * The connection map the daemon serves at /api/status: every known recipe ×
- * {dev,staging,prod}. Real-shaped, not hardcoded — provider list comes from
- * RECIPES, per-cell status from what's actually landed in the root store:
+ * The connection map the daemon serves at /api/status: every real recipe ×
+ * {dev,staging,prod}. Real-shaped, not hardcoded — provider list from RECIPES,
+ * per-cell status from what's landed in the root store:
  *   all env-vars present → "connected" · some → "missing" · none → "needs-consent".
- * On a fresh machine the store is empty, so every cell is honestly "needs-consent".
+ * Fresh machine → empty store → every cell honestly "needs-consent".
  *
- * ponytail: the store is machine-global (not yet per-env), so the same status
+ * ponytail: the store is machine-global (not per-env yet), so the same status
  * mirrors across all three envs. Split per-env once the Infisical sink tracks
  * which environment each secret landed in.
  */
@@ -78,6 +84,8 @@ export function connectionMap(): ProviderStatus[] {
   });
 }
 
+// ── the plan (read .env.example → gap per env) ───────────────────────────────
+
 /** One credential on the plan — a var from the `.env.example` manifest. */
 export interface PlanEntry {
   /** Env-var name (e.g. CLOUDFLARE_API_TOKEN). */
@@ -92,11 +100,10 @@ const SECTION = /^#\s*─+\s*([^─]+?)\s*─+\s*$/;
 const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 
 /**
- * Read `.env.example` (the manifest / shopping list) into the plan: every
- * credential the project declares, grouped by section, each flagged present or
- * missing. `present` reflects the LIVE env (default process.env) — NOT the RHS
- * written in the example, which holds names only. Missing file → empty plan.
- * Pure + path-injected so the CLI/daemon own where the file lives, not core.
+ * Read `.env.example` (the manifest) into the plan: every credential the project
+ * declares, grouped by section, each flagged present or missing against the LIVE
+ * env (default process.env) — NOT the RHS in the example, which holds names only.
+ * Missing file → empty plan. Pure + path-injected.
  */
 export function readPlan(
   examplePath: string,
@@ -118,69 +125,159 @@ export function readPlan(
 }
 
 /**
- * A runnable end-to-end walkthrough over a fake provider — real state
- * transitions, mock provider grant. Swap for LiveProvisioner (official APIs)
- * later; the Provisioner contract stays identical.
+ * The gap per environment: the manifest read once, then projected onto each of
+ * {dev,staging,prod}. The store is machine-global today, so the gap is the same
+ * across envs — but the shape is honest to the per-env model the sinks target.
  */
-export class MockProvisioner implements Provisioner {
-  #state: ProvisionState = "idle";
-  #recipe: Recipe | undefined;
+export function planByEnv(
+  examplePath: string,
+  env: Record<string, string | undefined> = process.env,
+): Record<Environment, PlanEntry[]> {
+  const entries = readPlan(examplePath, env);
+  return Object.fromEntries(ENVIRONMENTS.map((e) => [e, entries])) as Record<
+    Environment,
+    PlanEntry[]
+  >;
+}
+
+// ── the state machine ────────────────────────────────────────────────────────
+
+/**
+ * Drives one recipe through the credential lifecycle. Holds the minted secret
+ * VALUES privately (#values) — callers only ever see key names + status. Works
+ * against any recipe with mint/validate/autoProvision (the mock provider today,
+ * real auto providers later); the contract is identical.
+ */
+export class Provisioner {
+  readonly #recipe: Recipe;
   #values: Record<string, string> = {};
+  status: CredentialStatus = "missing";
+  readonly trail: CredentialStatus[] = [];
 
-  get state(): ProvisionState {
-    return this.#state;
-  }
-
-  async acquire(recipeId: string): Promise<void> {
-    this.#state = "acquire";
-    const recipe = RECIPES[recipeId];
-    if (!recipe) {
-      this.#state = "error";
-      throw new Error(`unknown recipe: ${recipeId}`);
-    }
+  constructor(recipeId: string) {
+    const recipe = getRecipe(recipeId);
+    if (!recipe) throw new Error(`unknown recipe: ${recipeId}`);
     this.#recipe = recipe;
-    // Fake the provider grant: one plausible value per required env var.
-    this.#values = Object.fromEntries(recipe.envVars.map((k) => [k, `mock-${k.toLowerCase()}`]));
   }
 
+  get recipeId(): string {
+    return this.#recipe.id;
+  }
+
+  private to(status: CredentialStatus): void {
+    this.status = status;
+    this.trail.push(status);
+  }
+
+  /** Consent granted — we now hold the recipe and may raid its token endpoint. */
+  consent(): void {
+    this.to("needs-consent");
+  }
+
+  /** Mint a scoped token (OAuth-style). Moves to `validating` (validate is next). */
+  async mint(): Promise<void> {
+    if (this.#recipe.mint) {
+      this.#values = { ...this.#values, ...(await this.#recipe.mint()) };
+    }
+    this.to("validating");
+  }
+
+  /** Validate-AFTER-mint: probe the token. Sets `validated` or `wrong-scope`. */
   async validateScopes(): Promise<ValidateResult> {
-    this.#state = "validateScopes";
-    if (!this.#recipe) throw new Error("call acquire() first");
+    if (!this.#recipe.validate) {
+      this.to("validated");
+      return { ok: true, scopes: [], missing: [] };
+    }
     const result = await this.#recipe.validate(this.#values);
-    if (!result.ok) this.#state = "error";
+    this.to(result.ok ? "validated" : "wrong-scope");
     return result;
   }
 
-  async provision(): Promise<Record<string, string>> {
-    this.#state = "provision";
-    return this.#values;
+  /** Create the cloud resource. Returns the env-var NAMES it produced (no values). */
+  async provision(repoName: string): Promise<string[]> {
+    this.to("provisioning");
+    if (this.#recipe.autoProvision) {
+      this.#values = await this.#recipe.autoProvision(this.#values, {
+        repoName,
+        log: () => undefined, // ponytail: swallow provider progress; wire to a stream when the UI wants it
+      });
+    }
+    return Object.keys(this.#values);
   }
 
-  async sync(env: Environment): Promise<void> {
-    this.#state = "sync";
-    const provider = this.#recipe?.id ?? "mock";
+  /** Fan every provisioned value to the sinks for `env`, persist to the store, → synced. */
+  async sync(env: Environment, envLocalPath?: string): Promise<{ wroteLocal: boolean }> {
+    let wroteLocal = false;
     for (const [key, value] of Object.entries(this.#values)) {
-      await syncCredential(key, value, { env });
-      putCredential(key, { value, provider, updatedAt: new Date().toISOString() });
+      const r = await syncCredential(key, value, { env, envLocalPath });
+      wroteLocal = wroteLocal || r.wroteLocal;
+      putCredential(key, { value, provider: this.#recipe.id, updatedAt: new Date().toISOString() });
     }
-    this.#state = "done";
+    this.to("synced");
+    return { wroteLocal };
   }
 }
 
+/** A provisioning outcome — names + status only, NEVER secret values. */
+export interface ProvisionReport {
+  recipe: string;
+  env: Environment;
+  status: CredentialStatus;
+  trail: CredentialStatus[];
+  scopes: string[];
+  missing: string[];
+  /** Env-var NAMES that were synced. */
+  keys: string[];
+  /** Whether a local .env.local was written (dev only). */
+  wroteLocal: boolean;
+}
+
 /**
- * Runnable self-check (ponytail: the one check the state machine needs).
- * Walks acquire → validate → provision without touching disk (skips sync).
+ * Run one recipe end-to-end for one environment: consent → mint → validate →
+ * provision → sync. A wrong-scope token is caught at validate and short-circuits
+ * BEFORE provisioning (never sync an under-scoped credential). Returns a report
+ * with key names + the status trail; no secret values ever leave this function.
+ */
+export async function provisionCredential(
+  recipeId: string,
+  opts: { env: Environment; repoName?: string; envLocalPath?: string },
+): Promise<ProvisionReport> {
+  const p = new Provisioner(recipeId);
+  p.consent();
+  await p.mint();
+  const v = await p.validateScopes();
+
+  const baseReport: Omit<ProvisionReport, "keys" | "wroteLocal"> = {
+    recipe: recipeId,
+    env: opts.env,
+    status: p.status,
+    trail: p.trail,
+    scopes: v.scopes ?? [],
+    missing: v.missing ?? [],
+  };
+
+  if (!v.ok) {
+    // wrong-scope: flagged, not provisioned, not synced.
+    return { ...baseReport, keys: [], wroteLocal: false };
+  }
+
+  const keys = await p.provision(opts.repoName ?? "ringtail");
+  const { wroteLocal } = await p.sync(opts.env, opts.envLocalPath);
+  return { ...baseReport, status: p.status, trail: p.trail, keys, wroteLocal };
+}
+
+/**
+ * Runnable self-check (ponytail: the one check the engine needs, no network).
+ * Confirms the manifest→plan projection and the real recipe registry are wired.
  * Run: `bun -e 'import("@ringtail/core").then((m) => m.demo())'`
  */
-export async function demo(): Promise<void> {
-  const p = new MockProvisioner();
-  await p.acquire("cloudflare");
-  const v = await p.validateScopes();
-  const values = await p.provision();
-  if (!v.ok) throw new Error("demo: expected scope validation to pass");
-  if (Object.keys(values).length !== 2) throw new Error("demo: expected 2 provisioned values");
-  if (p.state !== "provision") throw new Error(`demo: unexpected state ${p.state}`);
-  // readStore is import-proof; don't assert (may be empty on a fresh machine).
-  void readStore;
-  console.log("✓ core demo: cloudflare walked acquire→validate→provision");
+export function demo(): void {
+  const providers = connectionMap();
+  if (providers.length !== Object.keys(RECIPES).length) {
+    throw new Error("demo: connectionMap should list every real recipe");
+  }
+  if (!providers.every((p) => ENVIRONMENTS.every((e) => p.envs[e] !== undefined))) {
+    throw new Error("demo: every provider must carry a status per environment");
+  }
+  console.log(`✓ core demo: ${providers.length} providers × ${ENVIRONMENTS.length} envs wired`);
 }

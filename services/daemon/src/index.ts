@@ -1,5 +1,5 @@
 import { getEnv } from "@ringtail/config";
-import { connectionMap } from "@ringtail/core";
+import { connectionMap, provisionCredential, defaultEnvironment } from "@ringtail/core";
 import { Hono } from "hono";
 
 /**
@@ -22,14 +22,32 @@ app.get("/api/status", (c) => c.json({ providers: connectionMap() }));
 
 /**
  * OAuth redirect catcher. Providers bounce the consent grant back to
- * localhost:<daemon>/oauth/callback?code=…&state=…; the real handler will
- * exchange the code and hand off to core's acquire step. Stub for now.
+ * localhost:<daemon>/oauth/callback?recipe=…&state=…; we hand off to core's real
+ * lifecycle (consent → mint → validate → provision → sync) for that recipe. In
+ * dev this drives the mock provider (MOCK_PROVIDER_URL); in prod, a live recipe.
+ * The response carries the status + key NAMES only — NEVER a secret value.
  */
-app.get("/oauth/callback", (c) => {
-  const code = c.req.query("code");
-  const state = c.req.query("state");
-  // ponytail: echo-only stub. Wire code→token exchange + core.acquire() here.
-  return c.json({ ok: true, received: { code: code ?? null, state: state ?? null } });
+app.get("/oauth/callback", async (c) => {
+  const recipe = c.req.query("recipe") ?? "mock";
+  const state = c.req.query("state") ?? null;
+  try {
+    const report = await provisionCredential(recipe, { env: defaultEnvironment() });
+    // Strip to a value-free shape (report already carries names only).
+    return c.json({
+      ok: report.status === "synced",
+      state,
+      recipe: report.recipe,
+      status: report.status,
+      scopes: report.scopes,
+      missing: report.missing,
+      keys: report.keys,
+    });
+  } catch (err) {
+    return c.json(
+      { ok: false, state, recipe, error: err instanceof Error ? err.message : String(err) },
+      400,
+    );
+  }
 });
 
 // $PORT wins (portless/Tilt inject it); fall back to validated config default.

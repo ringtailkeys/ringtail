@@ -1,57 +1,45 @@
 /**
  * @ringtail/recipes — one Recipe per provider. A recipe knows which env vars it
- * owns, how it's acquired (mode), how to scope-validate a token, and how to
- * auto-provision one. Live scope/token-URL details are pulled from Context7 at
- * runtime so recipes don't rot against provider API changes.
+ * owns, how it's acquired (mode), how to mint + scope-validate a token, and how
+ * to auto-provision one. Live scope/token-URL details are marked TODO(c7) — to be
+ * pulled from Context7 at runtime so recipes don't rot against provider changes.
  */
-export type RecipeMode = "auto" | "guided" | "generate";
+export type { Recipe, ValidateResult, Mode, ProvisionCtx } from "./recipe";
 
-export interface ValidateResult {
-  ok: boolean;
-  /** Scopes the token actually carries. */
-  scopes: string[];
-  /** Env vars the recipe wanted but didn't get. */
-  missing: string[];
-}
+import type { Recipe } from "./recipe";
+import { recipe as cloudflare } from "./recipes/cloudflare";
+import { recipe as neon } from "./recipes/neon";
+import { recipe as betterAuth } from "./recipes/better-auth";
+import { recipe as resend } from "./recipes/resend";
+import { recipe as posthog } from "./recipes/posthog";
+import { recipe as infisical } from "./recipes/infisical";
+import { recipe as creem } from "./recipes/creem";
+import { mockRecipe, mockBadScopeRecipe } from "./recipes/mock";
 
-export interface ProvisionResult {
-  values: Record<string, string>;
-}
+export { makeMockRecipe, mockRecipe, mockBadScopeRecipe } from "./recipes/mock";
 
-export interface Recipe {
-  id: string;
-  /** Env-var names this recipe owns (subset of the .env.example manifest). */
-  envVars: string[];
-  mode: RecipeMode;
-  /** Scope-validate the acquired values against what the recipe requires. */
-  validate(values: Record<string, string>): Promise<ValidateResult>;
-  /** Drive the provider's official API to mint a scoped credential. */
-  autoProvision(): Promise<ProvisionResult>;
-}
-
-export const cloudflare: Recipe = {
-  id: "cloudflare",
-  envVars: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
-  mode: "guided",
-
-  async validate(values) {
-    // TODO(c7): fetch current scopes/token-URL via Context7 at runtime, then
-    // verify the token against Cloudflare's /user/tokens/verify endpoint.
-    const missing = this.envVars.filter((k) => !values[k]);
-    const hasToken = Boolean(values["CLOUDFLARE_API_TOKEN"]);
-    return {
-      ok: missing.length === 0 && hasToken,
-      scopes: hasToken ? ["com.cloudflare.api.account.zone.read"] : [],
-      missing,
-    };
-  },
-
-  async autoProvision() {
-    // TODO(c7): create a scoped token via Cloudflare's official token API.
-    return { values: {} };
-  },
-};
-
+/**
+ * The real provider registry — what the dashboard's connection grid renders and
+ * what a real repo provisions. Order: auto (has a management API) first, then
+ * guided (paste-and-validate), then generate (minted locally).
+ */
 export const RECIPES: Record<string, Recipe> = {
+  [neon.id]: neon,
   [cloudflare.id]: cloudflare,
+  [resend.id]: resend,
+  [posthog.id]: posthog,
+  [infisical.id]: infisical,
+  [creem.id]: creem,
+  [betterAuth.id]: betterAuth,
 };
+
+/** The mock provider recipes — used by the offline e2e + dev daemon, not shipped. */
+export const MOCK_RECIPES: Record<string, Recipe> = {
+  [mockRecipe.id]: mockRecipe,
+  [mockBadScopeRecipe.id]: mockBadScopeRecipe,
+};
+
+/** Resolve a recipe by id across real + mock registries. */
+export function getRecipe(id: string): Recipe | undefined {
+  return RECIPES[id] ?? MOCK_RECIPES[id];
+}
