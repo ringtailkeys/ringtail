@@ -1,0 +1,20 @@
+{
+  "name": "@ringtail/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "nx": {
+    "tags": [
+      "type:lib"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "$comment": "Extends the single-source-of-truth base. `bun-types` for the bun:test file + the node CLI. type:package → may import type:lib only (enforced by eslint.config.mjs).",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun-types", "node"]
+  },
+  "include": ["src"]
+}

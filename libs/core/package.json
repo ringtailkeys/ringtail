@@ -1,0 +1,23 @@
+{
+  "name": "@ringtail/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ringtail/config": "workspace:*",
+    "@ringtail/recipes": "workspace:*",
+    "@ringtail/sinks": "workspace:*",
+    "@ringtail/store": "workspace:*"
+  },
+  "nx": {
+    "tags": [
+      "type:lib"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

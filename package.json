@@ -1,0 +1,32 @@
+{
+  "name": "ringtail-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "libs/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "echo 'Run ./tilt_up.sh (not tilt up) — Tilt owns dev servers, not Nx.'",
+    "build": "nx run-many -t build",
+    "typecheck": "nx run-many -t typecheck",
+    "lint": "nx run-many -t lint",
+    "check": "nx run-many -t typecheck lint"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nx/eslint": "^23.0.1",
+    "@nx/eslint-plugin": "^23.0.1",
+    "@nx/js": "^23.0.1",
+    "@types/node": "^20.11.1",
+    "eslint": "^10.6.0",
+    "eslint-plugin-oxlint": "1.72.0",
+    "lefthook": "^1.8.2",
+    "nx": "^23.0.1",
+    "oxfmt": "0.57.0",
+    "oxlint": "1.72.0",
+    "typescript-eslint": "^8.62.1"
+  },
+  "packageManager": "bun@1.1.34"
+}

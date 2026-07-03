@@ -1,0 +1,27 @@
+{
+  "$comment": "Shared TS config. Every app/service/lib/package has its own tsconfig that extends this one — single source of truth (no config drift). The `paths` block below is what gives @nx/enforce-module-boundaries its teeth: without it Nx can't resolve @ringtail/* (apps & services have no `exports`/`main`) and silently SKIPS the tag depConstraints. Values MUST start with `./` (relative to this file) — a bare `libs/...` triggers TS5090 since there's no baseUrl. Paths are added per-package as they land (empty until the first workspace package exists).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "paths": {
+      "@ringtail/cli": ["./packages/cli/src/index.ts"],
+      "@ringtail/config": ["./libs/config/src/index.ts"],
+      "@ringtail/dashboard": ["./apps/dashboard/src/main.tsx"],
+      "@ringtail/daemon": ["./services/daemon/src/index.ts"],
+      "@ringtail/core": ["./libs/core/src/index.ts"],
+      "@ringtail/recipes": ["./libs/recipes/src/index.ts"],
+      "@ringtail/sinks": ["./libs/sinks/src/index.ts"],
+      "@ringtail/store": ["./libs/store/src/index.ts"],
+      "@ringtail/ui": ["./libs/ui/src/index.ts"]
+    }
+  }
+}

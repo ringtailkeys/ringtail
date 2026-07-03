@@ -1,0 +1,142 @@
+# ringtail (the TOOL) — local dev via Tilt + Vercel Portless.
+#
+# Every SERVED role (has a URL) is wrapped with portless so it gets a stable,
+# named URL instead of a pinned port: <role>.ringtail.localhost:1355. Portless
+# injects a random $PORT and proxies the named URL → that port, so NOTHING here
+# pins a service port. Every served role reads process.env.PORT:
+#   • services/daemon (Hono)  → export default { port: Number(process.env.PORT) || … }
+#   • apps/dashboard  (Vite)  → server.port = Number(process.env.PORT) || …
+#
+# The map (builders-stack "run vs ship"): apps/ = served to humans ·
+# services/ = served to machines · libs/ = shared, never served (no resource) ·
+# packages/ = shipped to third parties (built/watched here, never served).
+#
+# Boot ONLY via ../tilt_up.sh — never `tilt up` directly (it sets PATH so both
+# portless and bun are found, and pins the Tilt UI port). Loaded via
+# load_dynamic from the root Tiltfile, so cwd here is .devops/ → REPO_ROOT = ..
+
+# portless lives in Homebrew bin; bun in ~/.bun/bin. Neither is guaranteed on a
+# non-interactive PATH — put both on, homebrew first.
+os.putenv('PATH', '/opt/homebrew/bin:' + os.environ['HOME'] + '/.bun/bin:' + os.environ.get('PATH', ''))
+
+# Direct bun binary — bypasses the proto shim (~/.proto/shims/bun) that rewrites
+# `bun run X` to `moon run :X`, which breaks bare targets inside local_resource.
+BUN = os.environ['HOME'] + '/.bun/bin/bun'
+
+update_settings(max_parallel_updates=4)
+docker_prune_settings(disable=True)
+
+# This Tiltfile lives in .devops/, loaded via load_dynamic from the root Tiltfile,
+# so cwd is .devops/ — the repo root is one up.
+REPO_ROOT = str(local('cd .. && pwd', quiet=True)).strip()
+
+print('=' * 60)
+print('RINGTAIL TILT (tool) — LOCAL (portless)')
+print('=' * 60)
+
+# All served roles share this scheme. <role>.ringtail.localhost:1355
+PORTLESS_PROXY = 'http://{}.ringtail.localhost:1355'
+
+# Sourced into each service so secrets from .env.local reach the process. Cross-
+# service URLs are injected AFTER this (via portless_cmd env=), so they win over
+# any stale values in .env.local.
+ENV_LOCAL = 'set -a && [ -f ' + REPO_ROOT + '/.env.local ] && . ' + REPO_ROOT + '/.env.local; set +a; '
+
+# Portless wrapper: retry route registration with backoff to survive cross-project
+# lock contention (portless has a ~1s internal lock budget; another project
+# registering at the same moment can exceed it). Pass health_url to add a watchdog
+# that kills the process group if the URL stops responding, so Tilt restarts it
+# (fixes: portless stays alive while the dev server silently loops on a crash).
+def portless_cmd(args, env='', health_url=''):
+    cmd = (env + ' ' if env else '') + 'portless --force ' + args
+    retry = 'for i in 1 2 3 4 5; do ' + cmd + ' && break || echo "portless lock failed (attempt $i/5), retrying in ${i}s..." && sleep $i; done'
+    if not health_url:
+        return retry
+    watchdog = '(sleep 20; FAILS=0; while true; do sleep 10; ' + 'if curl -sf -o /dev/null ' + health_url + ' 2>/dev/null; then FAILS=0; ' + 'else FAILS=$((FAILS+1)); echo "[watchdog] health check failed ($FAILS/3) for ' + health_url + '"; ' + 'if [ $FAILS -ge 3 ]; then echo "[watchdog] killing process group after 3 failed checks"; kill 0; exit 1; fi; ' + 'fi; done) &'
+    # Wrap in { } so the backgrounded watchdog (&) doesn't break the parent shell.
+    return '{ ' + watchdog + ' ' + retry + '; }'
+
+# =============================================================================
+# Services (served to machines — have a URL, wrapped with portless)
+# =============================================================================
+
+# daemon — Hono. The LOCAL machine surface: /health, /api/status (the providers ×
+# {dev,staging,prod} grid the dashboard renders), and the /oauth/callback catcher.
+local_resource(
+    'daemon',
+    serve_cmd='cd ' + REPO_ROOT + ' && ' + ENV_LOCAL + portless_cmd(
+        'api.ringtail ' + BUN + ' --filter @ringtail/daemon dev',
+        health_url=PORTLESS_PROXY.format('api') + '/health'),
+    links=[PORTLESS_PROXY.format('api') + '/health', PORTLESS_PROXY.format('api') + '/api/status'],
+    labels=['services'],
+)
+
+# =============================================================================
+# Apps (served to humans — wrapped with portless)
+# =============================================================================
+
+# dashboard — Vite+React SPA, the LOCAL cockpit. Vite (not Next) because localhost
+# has no SEO; a fast SPA that polls the daemon is the whole job. VITE_DAEMON_URL
+# points its /api/status fetch at the daemon's portless URL (Vite only exposes
+# VITE_-prefixed env to the client).
+local_resource(
+    'dashboard',
+    serve_cmd='cd ' + REPO_ROOT + ' && ' + ENV_LOCAL + portless_cmd(
+        'dashboard.ringtail ' + BUN + ' --filter @ringtail/dashboard dev',
+        env='VITE_DAEMON_URL=' + PORTLESS_PROXY.format('api'),
+        health_url=PORTLESS_PROXY.format('dashboard')),
+    links=[PORTLESS_PROXY.format('dashboard')],
+    labels=['apps'],
+)
+
+# =============================================================================
+# Packages (shipped to third parties — built/watched, NEVER served → no portless)
+# =============================================================================
+
+# cli — @ringtail/cli. esbuild bundles src/cli.ts → dist/cli.js (the `ringtail`
+# bin). Tilt watches packages/cli/src and rebuilds on change (build/watch); nothing
+# serves it.
+local_resource(
+    'cli',
+    cmd='cd ' + REPO_ROOT + ' && ' + BUN + ' --filter @ringtail/cli build',
+    deps=[REPO_ROOT + '/packages/cli/src'],
+    labels=['packages'],
+)
+
+# =============================================================================
+# One-off flows (click-to-run buttons in the Tilt UI; auto_init=False = don't
+# run on boot)
+# =============================================================================
+
+# tunnel — cloudflared quick tunnel exposing the dashboard on a public URL for a
+# shareable preview (no account needed). Points at the portless dashboard URL.
+local_resource(
+    'tunnel',
+    cmd='cd ' + REPO_ROOT + ' && cloudflared tunnel --url ' + PORTLESS_PROXY.format('dashboard'),
+    auto_init=False,
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    labels=['flows'],
+)
+
+# build-prod — production Vite build of the dashboard (dist/). Manual: not part of
+# the dev loop.
+local_resource(
+    'build-prod',
+    cmd='cd ' + REPO_ROOT + ' && ' + BUN + ' --filter @ringtail/dashboard build',
+    auto_init=False,
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    labels=['flows'],
+)
+
+print("""
+================================================================================
+                     RINGTAIL LOCAL DEVELOPMENT (Portless)
+================================================================================
+  Dashboard: http://dashboard.ringtail.localhost:1355   (the cockpit)
+  Daemon:    http://api.ringtail.localhost:1355          (/health · /api/status)
+  CLI:       build/watch — no URL (packages/cli → dist/cli.js)
+
+  Flows (click in the Tilt UI): tunnel · build-prod
+  Portless proxy: install with `npm install -g portless` (starts automatically).
+================================================================================
+""")
