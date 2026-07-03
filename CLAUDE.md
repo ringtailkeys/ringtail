@@ -33,6 +33,21 @@ or drop the dependency. Trust is the product; one silent beacon breaks it.
 3. **By feature, not by layer.** Group files by the thing they do, not by `controllers/`
    `models/` `utils/` strata.
 
+## Design system — Storybook-first (enforced)
+
+All UI lives in the design system, reviewable in isolation before it's wired:
+
+- **Every reusable UI element is a `@ringtail/ui` component** (bespoke ones too). Screens
+  **compose** `@ringtail/ui` — they never inline reusable UI or duplicate styles. A component
+  is **incomplete** until it's in `libs/ui`, **has a Storybook story**, AND is used in an app
+  (in the design system, in Storybook, *and* used — all three).
+- **Every new screen/flow ships a Storybook demo.** Build the screen's view as a presentational
+  `@ringtail/ui` component driven by swappable `mock-*` state and story it — so the *whole
+  screen* is reviewable with **no daemon, no keys, no network** (which also keeps the
+  ZERO-TELEMETRY line honest — a screen you can review offline can't be phoning home). The app
+  page then only wires data + composes that view. Because a `lib` can't import an `app` (law 1),
+  storying a screen *means* lifting its view into `libs/ui` — that's the point.
+
 ## The boundary is ENFORCED, not suggested
 
 `@nx/enforce-module-boundaries` (in `eslint.config.mjs`) reads each package's

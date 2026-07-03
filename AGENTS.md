@@ -23,5 +23,12 @@ Four buckets, dependency arrow points down only:
   **by feature, not layer**.
 - `tsconfig.base.json` paths start with `./` or TS5090 throws.
 
+## 3. Storybook-first UI — enforced
+
+Every reusable UI element is a `@ringtail/ui` component with a **Storybook story**; every new
+screen ships a **Storybook demo** — its presentational view lifted into `libs/ui`, driven by
+`mock-*` state, reviewable with **no daemon, keys, or network** (keeps ZERO-TELEMETRY honest).
+Full rule in [`CLAUDE.md`](./CLAUDE.md).
+
 bun only. Dev via `./tilt_up.sh` (never `tilt up`). Verify with `bun run check`.
 Canonical domain: **ringtailkeys.com**.
