@@ -155,6 +155,109 @@ async function main(): Promise<void> {
 
     if (!allSynced || !wroteLocal) throw new Error("demo did not reach synced");
     console.log("\n✓ P2 spine proven: the agent drove the full loop over MCP to synced.\n");
+
+    // ── Layer 4 · Recovery (never a dead end) ────────────────────────────────
+    // A wrong-scope run → caught as a typed failure → the agent re-plans a recovery
+    // wizard (re-consent with the EXACT missing scope) → re-do → synced. Same MCP
+    // surface, zero real cloud. The mock-recipe seam models "which key the user gave".
+    console.log("── ringtail Layer 4 · recovery (wrong-scope → fix → synced) ──");
+
+    const NEON_WIZARD: Wizard = {
+      id: "wiz-neon",
+      title: "Connect Neon",
+      provider: "neon",
+      steps: [
+        {
+          id: "neon-paste",
+          title: "Paste your Neon API key",
+          description: "🔒 goes to Ringtail, not the agent.",
+          kind: "paste",
+          payload: { varName: "NEON_API_KEY" },
+          status: "pending",
+        },
+        {
+          id: "neon-provision",
+          title: "Provision dev · staging · prod",
+          description: "Mint → validate-after-mint → provision → sync.",
+          kind: "auto",
+          danger: "safe",
+          status: "pending",
+        },
+      ],
+    };
+
+    await call("renderWizard", { wizard: NEON_WIZARD });
+    await call("submitStep", { stepId: "neon-paste", value: "neon-key-UNDER-SCOPED" });
+
+    console.log("\n[R1] executeStep(neon-provision) — the user's key is UNDER-SCOPED:");
+    process.env.RINGTAIL_MOCK_RECIPE = "mock-badscope"; // models a read-only key
+    const bad = await call("executeStep", { stepId: "neon-provision" });
+    console.log(
+      `  failure → status=${bad.failure?.status}  missing=[${bad.failure?.missing?.join(", ")}]  reason="${bad.failure?.reason}"`,
+    );
+    if (bad.failure?.status !== "wrong-scope" || !bad.failure?.missing?.includes("write")) {
+      throw new Error("recovery: expected a wrong-scope failure naming the missing `write` scope");
+    }
+    printGrid((await call("plan")).grid, "neon");
+
+    console.log("\n[R2] agent re-plans → a RECOVERY wizard (re-consent for the missing scope):");
+    const RECOVERY_WIZARD: Wizard = {
+      id: "wiz-neon-recovery",
+      title: "Fix Neon — add the missing scope",
+      provider: "neon",
+      steps: [
+        {
+          id: "neon-reconsent",
+          title: "Re-create the key WITH write access",
+          description: `Your last key was missing: ${bad.failure.missing.join(", ")}. Add it, then re-paste.`,
+          kind: "open-url",
+          payload: {
+            url: "https://console.neon.tech/app/settings/api-keys",
+            scopes: bad.failure.missing,
+          },
+          status: "pending",
+        },
+        {
+          id: "neon-repaste",
+          title: "Paste the correctly-scoped key",
+          description: "🔒 goes to Ringtail, not the agent.",
+          kind: "paste",
+          payload: { varName: "NEON_API_KEY" },
+          status: "pending",
+        },
+        {
+          id: "neon-reprovision",
+          title: "Retry provision dev · staging · prod",
+          description: "Mint → validate → provision → sync.",
+          kind: "auto",
+          danger: "safe",
+          status: "pending",
+        },
+      ],
+    };
+    await call("renderWizard", { wizard: RECOVERY_WIZARD });
+    await call("submitStep", { stepId: "neon-reconsent" });
+    await call("submitStep", { stepId: "neon-repaste", value: "neon-key-CORRECTLY-SCOPED" });
+
+    console.log("\n[R3] executeStep(neon-reprovision) — the re-scoped key now validates:");
+    process.env.RINGTAIL_MOCK_RECIPE = "mock"; // the fix: a full-scope key
+    const fixed = await call("executeStep", { stepId: "neon-reprovision" });
+    for (const r of fixed.results as Array<{ env: string; status: string }>) {
+      console.log(`  ${r.env.padEnd(8)} → ${r.status}`);
+    }
+    delete process.env.RINGTAIL_MOCK_RECIPE;
+    for (const env of ["local", "dev", "staging", "prod"] as const) {
+      await call("updateStatus", { provider: "neon", env, status: "synced" });
+    }
+
+    const neonFinal = (await call("plan")).grid as GridRow[];
+    printGrid(neonFinal, "neon");
+    const neon = neonFinal.find((r) => r.provider === "neon")!;
+    const neonSynced = (["local", "dev", "staging", "prod"] as const).every(
+      (e) => neon.envs[e] === "synced",
+    );
+    if (fixed.failure || !neonSynced) throw new Error("recovery did not reach synced");
+    console.log("\n✓ Layer 4 proven: wrong-scope caught → recovery wizard → re-do → synced.\n");
   } finally {
     await client.close();
     await server.stop(true);

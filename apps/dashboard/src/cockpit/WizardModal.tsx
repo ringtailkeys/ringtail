@@ -1,5 +1,5 @@
 import type { Step, Wizard } from "@ringtail/core";
-import { Button, Eyebrow, Modal, StatusDot, font } from "@ringtail/ui";
+import { Button, Eyebrow, Modal, Rocco, StatusDot, font, roccoLine } from "@ringtail/ui";
 import { useState } from "react";
 
 /**
@@ -36,9 +36,37 @@ export function WizardModal({
   onClose?: () => void;
   onSubmit?: SubmitFn;
 }) {
+  // Layer 4 (recovery): a failed step turns the wizard into a rendered recovery
+  // surface — Rocco's error pose + the plain-language cause from the failed step.
+  // Never a dead end: the fix steps sit right below.
+  const failedStep = wizard.steps.find((s) => s.status === "failed");
   return (
     <Modal open title={wizard.title} onClose={onClose}>
       {wizard.provider && <Eyebrow>{wizard.provider} · the raid</Eyebrow>}
+      {failedStep && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginTop: 12,
+            padding: 12,
+            borderRadius: "var(--r-md)",
+            border: "1px solid color-mix(in srgb, var(--danger) 30%, transparent)",
+            background: "color-mix(in srgb, var(--danger) 10%, transparent)",
+          }}
+        >
+          <Rocco pose="error" size={44} />
+          <div>
+            <div style={{ fontFamily: font.ui, fontWeight: 600, color: "var(--danger)" }}>
+              {failedStep.title} failed
+            </div>
+            <div style={{ fontFamily: font.mono, fontSize: 12, color: "var(--ink-soft)" }}>
+              {failedStep.description || roccoLine("error")} — here's the fix.
+            </div>
+          </div>
+        </div>
+      )}
       <ol style={{ listStyle: "none", margin: "12px 0 0", padding: 0, display: "grid", gap: 12 }}>
         {wizard.steps.map((step, i) => (
           <li

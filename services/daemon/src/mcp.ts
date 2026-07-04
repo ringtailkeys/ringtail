@@ -35,6 +35,7 @@ const CREDENTIAL_STATUS = z.enum([
   "wrong-scope",
   "provisioning",
   "synced",
+  "failed",
 ]);
 
 /** Grid columns → the sink env axis. `local` is the .env.local disk sink; the three
@@ -56,13 +57,29 @@ export function buildMcpServer(
 ): McpServer {
   const server = new McpServer({ name: "ringtail", version: "0.2.0" });
 
+  // A typed failure the tool returns on wrong-scope / failed — the recovery hook the
+  // agent re-plans from. Names + a plain-language reason + the exact missing scope(s);
+  // NEVER a secret value (leak-guarded).
+  type EngineFailure = {
+    env: string;
+    status: "wrong-scope" | "failed";
+    reason?: string;
+    missing: string[];
+  };
+
   // Drive the mock engine across the deployed envs; flip grid cells as it goes.
   // dev's .env.local write also backs the `local` column (local → .env.local).
+  // Short-circuits on the first wrong-scope/failed env → returns a typed failure so
+  // the agent can author a recovery wizard (Layer 4, never a dead end).
+  // ponytail: the mock-spine seam — RINGTAIL_MOCK_RECIPE picks which fake recipe this
+  // run exercises (mock · mock-badscope · mock-failprovision). The real build maps the
+  // provider → its recipe; here the driver/tests flip it to prove recovery offline.
   const runEngine = async (provider: string) => {
+    const recipeId = process.env.RINGTAIL_MOCK_RECIPE ?? "mock";
     const results: Array<{ env: string; status: string; keys: string[] }> = [];
     for (const env of DEPLOYED_ENVS) {
       store.setCell(provider, env, "provisioning");
-      const report = await provisionCredential("mock", {
+      const report = await provisionCredential(recipeId, {
         env,
         repoName: opts.repoName,
         envLocalPath: opts.envLocalPath,
@@ -70,8 +87,17 @@ export function buildMcpServer(
       store.setCell(provider, env, report.status);
       if (report.wroteLocal) store.setCell(provider, "local", report.status);
       results.push({ env, status: report.status, keys: report.keys }); // NAMES only
+      if (report.status === "wrong-scope" || report.status === "failed") {
+        const failure: EngineFailure = {
+          env,
+          status: report.status,
+          reason: report.reason,
+          missing: report.missing,
+        };
+        return { results, failure };
+      }
     }
-    return results;
+    return { results, failure: null as EngineFailure | null };
   };
 
   // plan() → the live grid (providers × local/dev/staging/prod). Names + status.
@@ -186,9 +212,11 @@ export function buildMcpServer(
     async ({ stepId }) => {
       store.markStep(stepId, "active");
       const provider = store.snapshot().wizard?.provider ?? "mock";
-      const results = await runEngine(provider);
-      store.markStep(stepId, "done");
-      return ok({ stepId, provider, results });
+      const { results, failure } = await runEngine(provider);
+      // Failure is a rendered state, not a thrown error: mark the step `failed` so the
+      // wizard shows it (Rocco error pose), and hand the agent the reason to re-plan.
+      store.markStep(stepId, failure ? "failed" : "done");
+      return ok({ stepId, provider, results, failure });
     },
   );
 
@@ -197,15 +225,15 @@ export function buildMcpServer(
     "executeAction",
     {
       description:
-        "Run a mapped action (its embedded wizard's provisioning). Returns status + key names, never values.",
+        "Run a mapped action (its embedded wizard's provisioning). Returns status + key names, never values. On failure returns a typed recovery hook (reason + missing scope).",
       inputSchema: { id: z.string().min(1) },
     },
     async ({ id }) => {
       const action = store.snapshot().actions.find((a) => a.id === id);
       if (!action) throw new Error(`unknown action: ${id}`);
       const provider = action.wizard.provider ?? "mock";
-      const results = await runEngine(provider);
-      return ok({ id, provider, results });
+      const { results, failure } = await runEngine(provider);
+      return ok({ id, provider, results, failure });
     },
   );
 

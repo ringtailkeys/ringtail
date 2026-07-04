@@ -73,6 +73,12 @@ export function startMockProvider(): MockProvider {
         case "/provision": {
           const repoName = String(body.repoName ?? "app");
           calls.provision.push({ repoName });
+          // Failed-action variant (rate-limit/conflict) — deterministic, flag-driven,
+          // so recovery (Layer 4) is provable offline. A plain-language error the
+          // engine surfaces as a `failed` state + reason (never a secret value).
+          if (body.fail) {
+            return json({ error: "rate limited: too many provisioning requests (429)" }, 429);
+          }
           return json({ resourceId: `mock-res-${repoName}` });
         }
         case "/api/v1/auth/universal-auth/login": {

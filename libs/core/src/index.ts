@@ -39,7 +39,11 @@ export type CredentialStatus =
   | "validated"
   | "wrong-scope"
   | "provisioning"
-  | "synced";
+  | "synced"
+  // Layer 4 (recovery): a provision/sync action failed (API error, rate-limit,
+  // conflict). First-class, rendered state — carries a plain-language reason, never
+  // a secret value. Distinct from `wrong-scope` (caught at validate, before any call).
+  | "failed";
 
 /** The default environment to sync into, from validated config. */
 export function defaultEnvironment(): Environment {
@@ -217,14 +221,21 @@ export class Provisioner {
     return result;
   }
 
-  /** Create the cloud resource. Returns the env-var NAMES it produced (no values). */
+  /** Create the cloud resource. Returns the env-var NAMES it produced (no values).
+   * A provider failure (rate-limit/conflict/API error) → `failed` state, then rethrow
+   * so the caller can build a recovery report. Recovery is first-class, not an exception. */
   async provision(repoName: string): Promise<string[]> {
     this.to("provisioning");
     if (this.#recipe.autoProvision) {
-      this.#values = await this.#recipe.autoProvision(this.#values, {
-        repoName,
-        log: () => undefined, // ponytail: swallow provider progress; wire to a stream when the UI wants it
-      });
+      try {
+        this.#values = await this.#recipe.autoProvision(this.#values, {
+          repoName,
+          log: () => undefined, // ponytail: swallow provider progress; wire to a stream when the UI wants it
+        });
+      } catch (err) {
+        this.to("failed");
+        throw err;
+      }
     }
     return Object.keys(this.#values);
   }
@@ -254,6 +265,9 @@ export interface ProvisionReport {
   keys: string[];
   /** Whether a local .env.local was written (dev only). */
   wroteLocal: boolean;
+  /** Plain-language cause when status is `wrong-scope` or `failed` — the recovery
+   * hook the agent re-plans from. Names/reasons only, NEVER a secret value. */
+  reason?: string;
 }
 
 /**
@@ -281,13 +295,27 @@ export async function provisionCredential(
   };
 
   if (!v.ok) {
-    // wrong-scope: flagged, not provisioned, not synced.
-    return { ...baseReport, keys: [], wroteLocal: false };
+    // wrong-scope: flagged, not provisioned, not synced. The reason carries the
+    // exact missing scope(s) so the agent can author a re-consent recovery wizard.
+    return { ...baseReport, reason: v.detail, keys: [], wroteLocal: false };
   }
 
-  const keys = await p.provision(opts.repoName ?? "ringtail");
-  const { wroteLocal } = await p.sync(opts.env, opts.envLocalPath);
-  return { ...baseReport, status: p.status, trail: p.trail, keys, wroteLocal };
+  try {
+    const keys = await p.provision(opts.repoName ?? "ringtail");
+    const { wroteLocal } = await p.sync(opts.env, opts.envLocalPath);
+    return { ...baseReport, status: p.status, trail: p.trail, keys, wroteLocal };
+  } catch (err) {
+    // failed action (rate-limit/conflict/API error) — caught, not thrown at the UI.
+    // The reason routes the agent to a retry/alternative. No secret value ever here.
+    return {
+      ...baseReport,
+      status: "failed",
+      trail: p.trail,
+      reason: (err as Error).message,
+      keys: [],
+      wroteLocal: false,
+    };
+  }
 }
 
 /**

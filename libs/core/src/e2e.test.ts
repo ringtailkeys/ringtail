@@ -70,6 +70,32 @@ test("validate-AFTER-mint catches + flags a wrong-scope token (no provision, no 
   expect(mock.calls.infisical.length).toBe(before);
 });
 
+test("failed action: a rate-limited provision is caught + flagged `failed` (no sync), with a plain-language reason", async () => {
+  const before = mock.calls.infisical.length;
+  const report = await provisionCredential("mock-failprovision", {
+    env: "dev",
+    repoName: "ringtail",
+    envLocalPath,
+  });
+
+  // Validate passed (full-scope token), but the provision API call rate-limited.
+  expect(report.status).toBe("failed");
+  expect(report.scopes).toEqual(["read", "write"]);
+  expect(report.reason).toContain("rate limited"); // provider's plain-language cause
+  expect(report.keys).toEqual([]); // nothing synced
+  expect(report.trail).toEqual([
+    "needs-consent",
+    "validating",
+    "validated",
+    "provisioning",
+    "failed",
+  ]);
+  // Failed before sync → no new Infisical traffic.
+  expect(mock.calls.infisical.length).toBe(before);
+  // The reason must never carry a secret VALUE (defense-in-depth).
+  expect(report.reason ?? "").not.toContain("mock-token");
+});
+
 // The good path, as a re-runnable unit so we can prove idempotency.
 async function runGoodPath(): Promise<{ envLocal: string; statuses: string[] }> {
   const statuses: string[] = [];
