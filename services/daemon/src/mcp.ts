@@ -1,5 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ActionSchema, authorWizard, GRID_ENVS, WizardSchema } from "@ringtail/core";
+import {
+  ActionSchema,
+  authorWizard,
+  ChatChoiceSchema,
+  GRID_ENVS,
+  WizardSchema,
+} from "@ringtail/core";
 import { z } from "zod";
 import { runAction, runEngine } from "./action";
 import { applyStep } from "./submit";
@@ -154,19 +160,22 @@ export function buildMcpServer(
     },
   );
 
-  // sendChat(message) → agent → user. The DIRECTION channel, relayed through the
-  // daemon to the dashboard panel over SSE. Intent/TEXT only — the agent never puts
+  // sendChat(message, choices?) → agent → user. The DIRECTION channel, relayed through
+  // the daemon to the dashboard panel over SSE. Intent/TEXT only — the agent never puts
   // (or has) a secret value here; paste still bypasses the agent (user → daemon).
+  // Optional `choices` render as tappable pills (Delulus-chat style): "here are your
+  // next moves" arrives as choices, not a wall of text. Each choice is schema-validated
+  // (ChatChoiceSchema); a tapped pill's `value` returns via POST /api/chat → pollChat.
   server.registerTool(
     "sendChat",
     {
       description:
-        "Say something to the user in the dashboard chat (agent → user). Text/intent only, never a secret value.",
-      inputSchema: { message: z.string().min(1) },
+        "Say something to the user in the dashboard chat (agent → user), optionally with tappable choice pills (next moves). Text/intent only — labels + reply values, never a secret value.",
+      inputSchema: { message: z.string().min(1), choices: z.array(ChatChoiceSchema).optional() },
     },
-    async ({ message }) => {
-      store.sendAgentMessage(message);
-      return ok({ role: "agent", delivered: true });
+    async ({ message, choices }) => {
+      store.sendAgentMessage(message, choices);
+      return ok({ role: "agent", delivered: true, choices: choices?.length ?? 0 });
     },
   );
 

@@ -14,11 +14,30 @@ import { font, radius } from "./tokens";
  * from core) so @ringtail/ui stays free of the engine lib — the daemon maps its
  * ChatMessage onto this at the edge.
  */
+/** A tappable choice pill (Delulus-chat style). LABEL is shown; VALUE is the reply
+ * intent posted back when tapped. Structural (not imported from core) so @ringtail/ui
+ * stays free of the engine lib; the daemon maps its ChatChoice onto this at the edge.
+ * Intent only — never a secret value. */
+export interface ChatChoice {
+  id: string;
+  label: string;
+  value: string;
+}
+
 export interface ChatLine {
   role: "agent" | "user";
   text: string;
   ts?: number;
+  /** Agent-offered next moves, rendered as tappable pills below the text. */
+  choices?: ChatChoice[];
 }
+
+// Hover-lift for the choice pills (inline styles can't do :hover). Scoped by class.
+const CHOICE_CSS = `
+.rt-choice{transition:transform .12s ease,box-shadow .12s ease,background .12s ease,border-color .12s ease;}
+.rt-choice:not(:disabled):hover{transform:translateY(-1px);box-shadow:var(--shadow-soft);}
+.rt-choice:disabled{cursor:default;}
+`;
 
 export function ChatPanel({
   messages,
@@ -61,6 +80,7 @@ export function ChatPanel({
         ...style,
       }}
     >
+      <style>{CHOICE_CSS}</style>
       <div
         style={{
           padding: "12px 16px",
@@ -113,7 +133,9 @@ export function ChatPanel({
             steer the agent — “also set up Stripe”, “skip the R2 bucket”, “why that scope?”
           </p>
         ) : (
-          messages.map((m, i) => <Bubble key={m.ts ?? i} line={m} />)
+          messages.map((m, i) => (
+            <MessageRow key={m.ts ?? i} line={m} onPick={onSend} disabled={disabled} />
+          ))
         )}
       </div>
 
@@ -159,6 +181,101 @@ export function ChatPanel({
         </button>
       </div>
     </div>
+  );
+}
+
+/** One turn: the text bubble + (for an agent turn) its tappable choice pills below. */
+function MessageRow({
+  line,
+  onPick,
+  disabled,
+}: {
+  line: ChatLine;
+  onPick?: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <Bubble line={line} />
+      {line.role === "agent" && line.choices?.length ? (
+        <ChatChoices choices={line.choices} onPick={onPick} disabled={disabled} />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * ChatChoices — the interactive layer. "Here are your next moves" arrives as tappable
+ * pills, not a wall of text (exactly like the Delulus chat). Tapping a pill POSTs its
+ * `value` back through the user → agent path (same `onSend`), and the pills lock +
+ * mark the picked one selected. On-brand: mono pill, hairline border, hover-lift;
+ * GREEN is the selected/confirm accent only (sacred green). Intent only — a pill can
+ * never carry a secret value (paste bypasses the agent).
+ */
+export function ChatChoices({
+  choices,
+  onPick,
+  disabled = false,
+}: {
+  choices: ChatChoice[];
+  onPick?: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const locked = disabled || picked !== null || !onPick;
+  return (
+    <fieldset
+      aria-label="quick replies"
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 8,
+        alignSelf: "flex-start",
+        maxWidth: "82%",
+        marginTop: -2,
+        // reset the native fieldset box — we only want its grouping semantics.
+        border: "none",
+        margin: 0,
+        padding: 0,
+        minInlineSize: 0,
+      }}
+    >
+      {choices.map((c) => {
+        const selected = picked === c.id;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            className="rt-choice"
+            disabled={locked}
+            aria-pressed={selected}
+            onClick={() => {
+              if (locked || !onPick) return;
+              setPicked(c.id);
+              onPick(c.value);
+            }}
+            style={{
+              fontFamily: font.mono,
+              fontSize: 13,
+              fontWeight: 500,
+              padding: "6px 13px",
+              borderRadius: radius.pill,
+              border: `1px solid ${selected ? "var(--green)" : "var(--line)"}`,
+              background: selected
+                ? "color-mix(in srgb, var(--green) 14%, transparent)"
+                : "var(--bg)",
+              color: selected ? "var(--green)" : "var(--ink)",
+              cursor: locked ? "default" : "pointer",
+              // Faded when locked by someone else's pick; the selected one stays lit.
+              opacity: locked && !selected ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {selected ? `✓ ${c.label}` : c.label}
+          </button>
+        );
+      })}
+    </fieldset>
   );
 }
 

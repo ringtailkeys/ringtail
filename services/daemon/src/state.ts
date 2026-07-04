@@ -1,6 +1,7 @@
 import {
   gridSeed,
   type Action,
+  type ChatChoice,
   type ChatMessage,
   type CredentialStatus,
   type DaemonSnapshot,
@@ -102,9 +103,16 @@ export class DaemonStore {
 
   // ── chat: the direction channel (relayed through the daemon) ────────────────
 
-  /** Agent → user (sendChat MCP tool). Appends to the transcript, pushes to the UI. */
-  sendAgentMessage(text: string): void {
-    this.#chat.push({ role: "agent", text, ts: Date.now() });
+  /** Agent → user (sendChat MCP tool). Appends to the transcript, pushes to the UI.
+   * Optional `choices` render as tappable pills below the text (Delulus-chat style) —
+   * intent labels/values only, never a secret value. */
+  sendAgentMessage(text: string, choices?: ChatChoice[]): void {
+    this.#chat.push({
+      role: "agent",
+      text,
+      ts: Date.now(),
+      ...(choices?.length ? { choices } : {}),
+    });
     this.#emit();
   }
 

@@ -149,6 +149,36 @@ async function main(): Promise<void> {
     );
     if (panel().actions.length !== 0) throw new Error("action was NOT removed from the live panel");
 
+    // ── interactive pills: "here are your next moves" as tappable choices ───────
+    const CHOICES = [
+      { id: "stripe", label: "Set up Stripe", value: "set up Stripe" },
+      { id: "staging", label: "Add staging env", value: "add a staging env" },
+      { id: "skip-r2", label: "Skip R2", value: "skip the R2 bucket" },
+    ];
+
+    console.log('\n[6] agent → user : "What next?" WITH tappable choice pills');
+    await call("sendChat", { message: "What next?", choices: CHOICES });
+    await settle();
+    const last = panel().chat.at(-1);
+    if (last?.role !== "agent" || !last.choices || last.choices.length !== 3) {
+      throw new Error("choice pills did not reach the panel");
+    }
+    console.log(`      pills → [${last.choices.map((c) => c.label).join(" · ")}]`);
+
+    console.log('[7] user TAPS "Set up Stripe" → its VALUE returns to the agent');
+    // A pill tap posts its `value` through the SAME user → agent path (POST /api/chat).
+    await userSays(CHOICES[0]!.value);
+    await settle();
+    const inbox3 = await call("pollChat");
+    if (!inbox3.messages.includes("set up Stripe")) {
+      throw new Error("tapped choice value did not reach the agent");
+    }
+    // Intent-only, value-free: the pills carry labels + reply intent, never a secret.
+    if (/sk_live|secret[-_]?key.*=/.test(JSON.stringify(panel().chat))) {
+      throw new Error("a secret leaked into the choice pills");
+    }
+    console.log("      ✓ tapped pill value arrived at the agent (intent-only)");
+
     // The whole conversation the panel now shows (agent + user, in order).
     console.log("\n── transcript (what the chat panel renders) ──");
     for (const m of panel().chat) console.log(`  ${m.role === "agent" ? "🦝" : "🙂"} ${m.text}`);

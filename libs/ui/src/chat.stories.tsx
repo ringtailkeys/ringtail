@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { ChatPanel, type ChatLine } from "./chat";
+import { ChatPanel, type ChatChoice, type ChatLine } from "./chat";
 
 const meta = {
   title: "Cockpit/ChatPanel",
@@ -46,6 +46,33 @@ export const Offline: Story = {
       <ChatPanel {...args} />
     </div>
   ),
+};
+
+const CHOICES: ChatChoice[] = [
+  { id: "stripe", label: "Set up Stripe", value: "set up Stripe" },
+  { id: "staging", label: "Add staging env", value: "add a staging env" },
+  { id: "skip-r2", label: "Skip R2", value: "skip the R2 bucket" },
+];
+
+/** The interactive layer: "next moves" arrive as tappable pills, not a wall of text.
+ * Tap one → its value posts back as a user reply and the pills lock + mark selected. */
+export const WithChoices: Story = {
+  args: {
+    messages: [{ role: "agent", text: "Cloudflare stashed. What next?", ts: 1, choices: CHOICES }],
+  },
+  render: () => {
+    const [msgs, setMsgs] = useState<ChatLine[]>([
+      { role: "agent", text: "Cloudflare stashed. What next?", ts: 1, choices: CHOICES },
+    ]);
+    return (
+      <div style={{ width: 420 }}>
+        <ChatPanel
+          messages={msgs}
+          onSend={(text) => setMsgs((m) => [...m, { role: "user", text, ts: Date.now() }])}
+        />
+      </div>
+    );
+  },
 };
 
 /** Live-ish: type + Enter appends a user line (the daemon relays it for real). */

@@ -79,16 +79,35 @@ export interface GridRow {
 }
 
 /**
+ * A tappable choice pill in the chat (Delulus-chat style). The agent offers next
+ * moves as pills, not a wall of text. TRUST BOUNDARY: `label` is what the pill shows,
+ * `value` is the reply INTENT posted back through the user → agent path when tapped —
+ * both are intent/text only, NEVER a secret value. paste still bypasses the agent, so
+ * a choice can only ever carry a name/intent (check:no-leak stays green).
+ */
+export const ChatChoiceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  value: z.string().min(1),
+});
+export type ChatChoice = z.infer<typeof ChatChoiceSchema>;
+
+/**
  * One line in the dashboard conversation. The chat is the DIRECTION channel (the
  * user steers; the agent converses) alongside the state channel (grid/wizard/actions),
  * one agent behind both. Carries intent/TEXT only — NEVER a secret value; paste still
  * bypasses the agent (user → daemon). `role` says who spoke; `ts` orders the thread.
+ * An agent line may offer `choices` — tappable pills rendered below the text. Zod, not
+ * an interface: it's the trust boundary — the daemon validates every agent-supplied
+ * message (malformed rejected) before it touches the snapshot.
  */
-export interface ChatMessage {
-  role: "agent" | "user";
-  text: string;
-  ts: number;
-}
+export const ChatMessageSchema = z.object({
+  role: z.enum(["agent", "user"]),
+  text: z.string(),
+  ts: z.number(),
+  choices: z.array(ChatChoiceSchema).optional(),
+});
+export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
 /**
  * The whole live daemon state, streamed to the dashboard over SSE. ONE source of
