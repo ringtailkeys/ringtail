@@ -105,6 +105,19 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     }
   });
 
+  // POST /api/chat — the USER → agent direction channel. The user types in the
+  // dashboard; the message is appended to the transcript (renders at once over SSE)
+  // AND queued for the agent to drain via the pollChat MCP tool. Intent TEXT only —
+  // never a secret value (paste has its own path, POST /api/step). Token-gated.
+  app.post("/api/chat", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: string };
+    const text = body.text?.trim();
+    if (!text) return c.json({ error: "text required" }, 400);
+    store.postUserMessage(text);
+    return c.json({ ok: true });
+  });
+
   // GET /api/agents — detected coding-agent CLIs on PATH + the exact MCP-connect
   // command per agent (URL from THIS request's origin + the session token). The
   // dashboard renders the picker (architecture.md §"Entry & agent selection").

@@ -39,6 +39,19 @@ export async function submitStep(stepId: string, value?: string): Promise<{ stat
   return (await res.json()) as { status: string };
 }
 
+/** The user → agent direction channel: POST the chat text to the daemon, which
+ * appends it to the transcript (renders at once over SSE) and queues it for the
+ * agent to drain (pollChat). Intent text only — never a secret value. */
+export async function sendChat(text: string): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`sendChat failed: ${res.status}`);
+}
+
 export interface DetectedAgent {
   id: string;
   name: string;
@@ -103,5 +116,5 @@ export function fixtureSnapshot(): DaemonSnapshot {
       prod: p.envs.prod,
     },
   }));
-  return { grid, wizard: null, actions: [] };
+  return { grid, wizard: null, actions: [], chat: [] };
 }

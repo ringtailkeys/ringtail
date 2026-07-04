@@ -15,6 +15,7 @@
     "check": "nx run-many -t typecheck lint",
     "check:no-leak": "bun test services/daemon/src/no-leak.test.ts",
     "demo": "bun services/daemon/src/demo-drive.ts",
+    "demo:chat": "bun services/daemon/src/demo-chat.ts",
     "storybook": "storybook dev -p ${PORT:-6006} --no-open",
     "build-storybook": "storybook build"
   },

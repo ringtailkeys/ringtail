@@ -74,12 +74,27 @@ export interface GridRow {
 }
 
 /**
+ * One line in the dashboard conversation. The chat is the DIRECTION channel (the
+ * user steers; the agent converses) alongside the state channel (grid/wizard/actions),
+ * one agent behind both. Carries intent/TEXT only — NEVER a secret value; paste still
+ * bypasses the agent (user → daemon). `role` says who spoke; `ts` orders the thread.
+ */
+export interface ChatMessage {
+  role: "agent" | "user";
+  text: string;
+  ts: number;
+}
+
+/**
  * The whole live daemon state, streamed to the dashboard over SSE. ONE source of
  * truth: MCP tool calls mutate it → the daemon pushes this snapshot → the cockpit
- * re-renders. Value-free by construction (grid = statuses, wizard = names + kinds).
+ * re-renders. Value-free by construction (grid = statuses, wizard = names + kinds,
+ * chat = intent text). The agent both converses (chat) and renders (grid/wizard/
+ * actions) over the same MCP connection — the dashboard is a conversation, not a board.
  */
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
   actions: Action[];
+  chat: ChatMessage[];
 }

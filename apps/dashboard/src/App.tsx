@@ -1,11 +1,20 @@
 import type { DaemonSnapshot } from "@ringtail/core";
-import { Badge, allKeyframes, cssVars, font, moonlit, radius } from "@ringtail/ui";
+import {
+  ActionsPanel,
+  Badge,
+  ChatPanel,
+  allKeyframes,
+  cssVars,
+  font,
+  moonlit,
+  radius,
+} from "@ringtail/ui";
 import { useEffect, useState } from "react";
 import roccoChill from "../../.brand-assets/rocco-chill.png";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { WizardModal } from "./cockpit/WizardModal";
-import { fixtureSnapshot, submitStep, subscribeLive } from "./live";
+import { fixtureSnapshot, sendChat, submitStep, subscribeLive } from "./live";
 
 /**
  * The LOCAL cockpit — now wired LIVE. It subscribes to the daemon's SSE state
@@ -51,6 +60,22 @@ export function App() {
           </div>
           {live && <AgentPicker />}
           <LiveGrid grid={snapshot.grid} />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+              gap: 24,
+              marginTop: 28,
+              alignItems: "start",
+            }}
+          >
+            <ActionsPanel actions={snapshot.actions} />
+            <ChatPanel
+              messages={snapshot.chat}
+              onSend={live ? sendChat : undefined}
+              disabled={!live}
+            />
+          </div>
         </div>
       </div>
       {snapshot.wizard && (

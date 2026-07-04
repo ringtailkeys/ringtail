@@ -1,5 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { GRID_ENVS, provisionCredential, WizardSchema, type Environment } from "@ringtail/core";
+import {
+  ActionSchema,
+  GRID_ENVS,
+  provisionCredential,
+  WizardSchema,
+  type Environment,
+} from "@ringtail/core";
 import { z } from "zod";
 import { applyStep } from "./submit";
 import type { DaemonStore } from "./state";
@@ -94,6 +100,52 @@ export function buildMcpServer(
         steps: wizard.steps.map((s) => ({ id: s.id, kind: s.kind, status: s.status })),
       });
     },
+  );
+
+  // renderActions(actions) → push the mapped, LIVING action list to the cockpit.
+  // Directable actions (architecture.md §"The dashboard is a conversation"): a user
+  // chat ("also set up Stripe" / "skip X") is drained via pollChat, the agent re-maps,
+  // and calls this again — the panel re-renders live over SSE. Each Action is schema-
+  // validated (WizardSchema nested), NEVER carries a value (it's names + wizard steps).
+  server.registerTool(
+    "renderActions",
+    {
+      description:
+        "Push the mapped action list to the cockpit (the living layer-2 panel). Each Action is schema-validated; re-call it to add/remove/adjust as the user steers.",
+      inputSchema: { actions: z.array(ActionSchema) },
+    },
+    async ({ actions }) => {
+      store.setActions(actions);
+      return ok({ actions: actions.map((a) => ({ id: a.id, title: a.title, danger: a.danger })) });
+    },
+  );
+
+  // sendChat(message) → agent → user. The DIRECTION channel, relayed through the
+  // daemon to the dashboard panel over SSE. Intent/TEXT only — the agent never puts
+  // (or has) a secret value here; paste still bypasses the agent (user → daemon).
+  server.registerTool(
+    "sendChat",
+    {
+      description:
+        "Say something to the user in the dashboard chat (agent → user). Text/intent only, never a secret value.",
+      inputSchema: { message: z.string().min(1) },
+    },
+    async ({ message }) => {
+      store.sendAgentMessage(message);
+      return ok({ role: "agent", delivered: true });
+    },
+  );
+
+  // pollChat() → drain pending user direction (user → agent). The user's chat is
+  // queued by POST /api/chat; the agent drains it here, then re-runs mapActions/
+  // renderWizard/renderActions to match what the user asked. Returns intent text only.
+  server.registerTool(
+    "pollChat",
+    {
+      description:
+        "Drain pending user chat (user → agent). Returns queued user messages (intent text) to act on; re-render actions/wizard to match.",
+    },
+    async () => ok({ messages: store.drainInbox() }),
   );
 
   // updateStatus(provider, env, status) → flip one grid cell.
