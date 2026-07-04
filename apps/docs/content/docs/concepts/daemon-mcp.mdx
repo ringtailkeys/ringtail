@@ -1,0 +1,35 @@
+---
+title: The daemon & MCP
+description: One always-on local host that serves the cockpit and is the MCP server, over Streamable HTTP with a session token.
+---
+
+A single Hono **daemon** is the local host. It:
+
+- serves the **dashboard** UI, and
+- is the **MCP server**, over **Streamable HTTP** at `http://127.0.0.1:<port>/mcp`.
+
+## Why Streamable HTTP, not stdio
+
+The dashboard and the agent must share **one** live state — the connection map, the consent
+callbacks, the grid. stdio would spawn a separate per-session server with its own state, so
+the cockpit and the agent would disagree. One HTTP host keeps a single source of truth and
+streams it to the dashboard over SSE at `/events`.
+
+A stdio→HTTP shim (`ringtail mcp-stdio`) bridges stdio-only clients without forking that
+state.
+
+## Security — non-negotiable for a creds tool
+
+- **Loopback only.** The daemon binds `127.0.0.1`; nothing is exposed off-box.
+- **Session token.** `ringtail up` mints a token, required on every MCP call and the `/events`
+  stream, shared with the dashboard and the registered agent.
+- **Origin / CSRF checks** on the browser-facing routes.
+- **Zero telemetry.** The only network targets are this local daemon and the real provider
+  APIs.
+
+## The loop
+
+The agent renders wizards and actions; you complete a `paste` or `confirm`; the daemon
+notifies the agent via a callback (`submitStep` + callbacks) so the wizard advances live. The
+daemon executes provisioning with the stored creds and streams status back — never values.
+The exact tools are in the [MCP tools reference](/docs/reference/mcp-tools).

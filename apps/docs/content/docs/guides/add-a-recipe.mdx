@@ -1,0 +1,61 @@
+---
+title: Add a provider recipe
+description: Recipes are the tested fast-path. But you rarely need one — the agent covers the long tail by authoring wizards live.
+---
+
+Ringtail has two ways to set up a provider, and it's worth understanding why before you write
+any code.
+
+## Recipes vs agent-authored wizards
+
+- **Recipes** (`libs/recipes`) are the **fast-path** — tested, one-click, deterministic. The
+  curated set is roughly seven: `cloudflare`, `neon`, `better-auth`, `resend`, `posthog`,
+  `infisical`, `creem`.
+- **Agent-authored wizards** are the **universal fallback** for the infinite long tail — any
+  provider, any action — via `authorWizard` plus live docs.
+
+The net: **you don't need many recipes to be useful.** The agent covers everything; recipes
+are an optimization, not a requirement. That kills the maintenance tax — so add a recipe only
+when a provider is common enough that a tested one-click path earns its keep.
+
+## The Recipe contract
+
+Every provider ships one `Recipe` in `libs/recipes/src/recipes/<id>.ts`. Core is
+provider-agnostic — it only knows this interface:
+
+```ts
+interface Recipe {
+  id: string;              // stable id + store key, e.g. 'cloudflare'
+  title: string;           // display name
+  mode: "auto" | "guided" | "generate";
+  envVars: string[];       // which .env vars this recipe fills
+  tokenCreateUrl?: string; // deep-link to the exact token page (guided)
+  docsUrl?: string;
+  requiredScopes?: string[];
+  rootCredKeys?: string[]; // which keys are ROOT creds — stored + reused across repos
+
+  mint?(): Promise<Record<string, string>>;
+  validate?(creds: Record<string, string>): Promise<ValidateResult>; // REAL API probe, after mint
+  generate?(): Record<string, string>;                               // mode:'generate', local, no network
+  autoProvision?(                                                    // mode:'auto'
+    creds: Record<string, string>,
+    ctx: ProvisionCtx,
+  ): Promise<Record<string, string>>;
+}
+```
+
+The three modes:
+
+- `auto` — the provider has a management API we can call to mint the token or resource.
+- `guided` — the user creates the key by hand (deep-linked); we validate it.
+- `generate` — no external account; we mint the value locally (e.g. an auth secret).
+
+<Callout type="warn">
+**Validate after mint.** `validate` runs a real API probe against the entered or minted
+credentials and reports whether they authenticated *and* carry every required scope. A missing
+scope drives the `wrong-scope` state — Ringtail refuses to provision or sync a key that
+wouldn't work. Never log a secret value from `autoProvision`'s `ctx.log`.
+</Callout>
+
+Live scope and token-URL details are pulled from Context7 at runtime, so recipes don't rot
+against provider changes.

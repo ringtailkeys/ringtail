@@ -1,0 +1,64 @@
+---
+title: The Wizard / Step / Action contract
+description: One schema for setup and actions — the typed vocabulary the agent fills and Ringtail renders.
+---
+
+"Set up an unknown key" and "do this next action" are the **same structured thing**, rendered
+by one universal 1-2-3 wizard. This is the typed vocabulary the agent fills; each type maps 1:1
+to a Night Shift component.
+
+```ts
+type StepKind = "open-url" | "paste" | "auto" | "confirm";
+
+interface Step {
+  id: string;
+  title: string;
+  description: string;
+  kind: StepKind;
+  payload?: { url?: string; varName?: string; scopes?: string[] };
+  danger?: "safe" | "confirm" | "destructive";
+  status: "pending" | "active" | "done" | "failed";
+}
+
+interface Wizard {
+  id: string;
+  title: string;
+  provider?: string;
+  steps: Step[];
+}
+
+interface Action {
+  id: string;
+  title: string;
+  why: string;
+  prerequisites: string[];
+  danger: "safe" | "confirm" | "destructive";
+  wizard: Wizard;
+}
+```
+
+## Step kinds — and the trust linchpin
+
+- **`open-url`** — Ringtail opens the deep-link. Must be an https provider URL,
+  allowlist-validated, not arbitrary.
+- **`paste`** — the value flows **user → Ringtail, never through the agent.** The agent authors
+  the step ("paste your Resend key, needs `sending` scope"); Ringtail collects, validates
+  (validate-after-paste), and stores. This is what keeps the guarantee true even for
+  agent-generated wizards.
+- **`auto`** — a typed executor / API call, no human.
+- **`confirm`** — human approval; `destructive` (domain transfer, NS swap, delete) is
+  hard-gated, never one-click.
+
+The agent **checks off each step as it completes** (streamed), so the wizard advances live in
+the cockpit.
+
+## Guardrails
+
+1. Every agent-produced payload is **schema-validated**; malformed is rejected. No freeform
+   HTML/markdown as UI.
+2. `paste` values go **user → tool, never through the agent.**
+3. `open-url` URLs are allowlist-validated (https provider domains).
+4. `auto` steps are typed executors, not arbitrary shell; novel agent steps get extra human
+   review.
+5. `destructive` steps hard-confirm.
+6. **Zero telemetry.** No analytics, no phone-home, ever.

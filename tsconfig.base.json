@@ -16,6 +16,7 @@
       "@ringtail/cli": ["./packages/cli/src/index.ts"],
       "@ringtail/config": ["./libs/config/src/index.ts"],
       "@ringtail/dashboard": ["./apps/dashboard/src/main.tsx"],
+      "@ringtail/docs": ["./apps/docs/app/page.tsx"],
       "@ringtail/daemon": ["./services/daemon/src/index.ts"],
       "@ringtail/core": ["./libs/core/src/index.ts"],
       "@ringtail/recipes": ["./libs/recipes/src/index.ts"],

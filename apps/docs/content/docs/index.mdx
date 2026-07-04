@@ -1,0 +1,78 @@
+---
+title: Quickstart
+description: One command boots the local daemon, opens the cockpit, and lets your coding agent raid every token page on your project's manifest.
+---
+
+Ringtail is a **local, open-source, agent-orchestrated credential-provisioning tool**.
+Rocco — your coding agent's little raccoon — reads `.env.example` as the shopping list,
+raids each provider's token page via their **official APIs**, scope-validates every key,
+and stashes it into `.env.local` **and** Infisical across your environments. One human
+"allow" per provider, then zero-touch forever.
+
+The one thing to remember before anything else: **the agent never sees a secret value.**
+It orchestrates; it never holds a key. That is a structural invariant of the code, not a
+promise — see [The guarantee](/docs/concepts/the-guarantee).
+
+## Run it
+
+```bash
+npx ringtail
+```
+
+`npx ringtail` (`ringtail up`) boots the local daemon, opens the dashboard, and detects the
+coding-agent CLIs on your PATH. Nothing is installed globally; nothing phones home.
+
+Hacking on the repo instead? Use Tilt — never `tilt up` directly:
+
+```bash
+bun install
+./tilt_up.sh
+```
+
+That brings up the daemon, dashboard, and Storybook on stable portless URLs
+(`dashboard.ringtail.localhost:1355`, `api.ringtail.localhost:1355`,
+`storybook.ringtail.localhost:1355`).
+
+## The first run — ①②③
+
+<Steps>
+<Step>
+### ① Connect your coding agent
+
+Ringtail detects `claude`, `codex`, `cursor`, and `gemini` on your PATH and hands you the
+exact command to register the daemon as an MCP server — URL + a loopback **session token**
+filled in. Paste it into your agent and it starts driving. No agent on PATH? Pick
+**guided / manual** and drive the wizard yourself.
+
+The connection is over MCP with a loopback token — never a secret value. Full walkthrough:
+[Connect your agent](/docs/guides/connect-your-agent).
+</Step>
+
+<Step>
+### ② Choose your local project
+
+Ringtail is **project-scoped**: it reads the chosen project's `.env.example` as the
+manifest and builds the grid from it. Pick a detected project or paste a path. Names and
+paths only cross — no file contents, nothing secret. See
+[Project-scoping](/docs/concepts/project-scoping).
+</Step>
+
+<Step>
+### ③ Watch the cockpit
+
+The agent reads the manifest and plans the raid. You make only the calls a human must —
+a consent click, a paste, an approval on a destructive action — and the agent automates the
+rest: mint → validate → provision → sync, one key fanned out per environment into
+`.env.local` and Infisical. Cells flip green as it works. This is the point: Ringtail is not
+a form you fill, it's an agent that does the work while you watch.
+</Step>
+</Steps>
+
+## Where to go next
+
+<Cards>
+  <Card title="The four layers" href="/docs/concepts/four-layers" description="Get keys · map actions · automate · recover — the whole product in order." />
+  <Card title="The guarantee" href="/docs/concepts/the-guarantee" description="Why the agent structurally cannot see a secret value — and how to audit it." />
+  <Card title="Connect your agent" href="/docs/guides/connect-your-agent" description="Register the daemon over MCP and start the raid." />
+  <Card title="CLI reference" href="/docs/reference/cli" description="ringtail, ringtail up, --json." />
+</Cards>

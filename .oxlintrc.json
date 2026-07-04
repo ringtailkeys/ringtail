@@ -15,6 +15,9 @@
   "ignorePatterns": [
     "**/node_modules/**",
     "**/dist/**",
-    "**/build/**"
+    "**/build/**",
+    "**/.next/**",
+    "**/.source/**",
+    "**/next-env.d.ts"
   ]
 }

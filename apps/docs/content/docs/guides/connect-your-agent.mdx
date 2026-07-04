@@ -1,0 +1,47 @@
+---
+title: Connect your agent
+description: Register the daemon as an MCP server for your coding agent — dashboard-first or agent-first.
+---
+
+There are two ways in. Both end the same way: your agent is registered as an MCP client of
+the local daemon, authenticated with a loopback session token, and driving the raid while the
+cockpit streams progress.
+
+## Dashboard-first
+
+```bash
+npx ringtail
+```
+
+`ringtail up` boots the daemon, opens the dashboard, and **auto-detects agent CLIs on your
+PATH** — `claude`, `codex`, `cursor`, `gemini`. Pick one and the cockpit hands you the exact
+command that registers this daemon as its MCP server, with the URL and session token filled
+in. Paste it into the agent and it starts driving.
+
+No agent on PATH? Choose **guided / manual** and drive the wizard yourself — paste keys as the
+grid asks. No agent required.
+
+## Agent-first
+
+Already in Claude Code? Register the daemon directly:
+
+```bash
+claude mcp add ringtail --transport http \
+  http://127.0.0.1:<port>/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+Then just tell it: *"set up my keys."* The dashboard opens as the visual surface.
+
+<Callout type="info">
+The connection is MCP + a loopback token — the agent's surface is key **names**, statuses, and
+the wizards/actions it authors. A pasted value flows you → daemon and never crosses this
+boundary. See [The guarantee](/docs/concepts/the-guarantee).
+</Callout>
+
+## What the agent can and can't do over the connection
+
+It can `plan` the grid, author and render wizards and actions, flip status cells, trigger
+`auto` steps and actions, and converse in the dashboard chat. It **cannot** read a stored
+value — no tool returns one. The full surface is in the
+[MCP tools reference](/docs/reference/mcp-tools).

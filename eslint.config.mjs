@@ -36,7 +36,7 @@ export default [
   ...nx.configs["flat/typescript"],
   ...nx.configs["flat/javascript"],
   {
-    ignores: ["**/dist", "**/build", "**/node_modules"],
+    ignores: ["**/dist", "**/build", "**/node_modules", "**/.next", "**/.source"],
   },
   {
     files: ["**/*.ts", "**/*.tsx", "**/*.cts", "**/*.mts", "**/*.js", "**/*.jsx"],

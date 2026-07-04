@@ -96,6 +96,19 @@ local_resource(
     labels=['apps'],
 )
 
+# docs — @ringtail/docs, the public docs site (Next.js App Router + Fumadocs MDX).
+# `next dev` reads the injected $PORT (dev script: --port ${PORT:-4882}); the fumadocs
+# createMDX plugin codegens .source/ on boot. Deploys to docs.ringtailkeys.com (Cloudflare
+# Pages) — see apps/docs/DEPLOY.md.
+local_resource(
+    'docs',
+    serve_cmd='cd ' + REPO_ROOT + ' && ' + ENV_LOCAL + portless_cmd(
+        'docs.ringtail ' + BUN + ' --filter @ringtail/docs dev',
+        health_url=PORTLESS_PROXY.format('docs')),
+    links=[PORTLESS_PROXY.format('docs')],
+    labels=['apps'],
+)
+
 # storybook — the design system (libs/ui) + every cockpit demo flow (apps/dashboard)
 # in one book. Lives at the repo ROOT; the root `storybook` script binds
 # `-p ${PORT:-6006}`, so portless's injected $PORT wins (mirrors builders-stack).
@@ -153,6 +166,7 @@ print("""
                      RINGTAIL LOCAL DEVELOPMENT (Portless)
 ================================================================================
   Dashboard: http://dashboard.ringtail.localhost:1355   (the cockpit)
+  Docs:      http://docs.ringtail.localhost:1355         (public docs site)
   Storybook: http://storybook.ringtail.localhost:1355   (design system + flows)
   Daemon:    http://api.ringtail.localhost:1355          (/health · /api/status)
   CLI:       build/watch — no URL (packages/cli → dist/cli.js)

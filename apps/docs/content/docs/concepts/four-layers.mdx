@@ -1,0 +1,48 @@
+---
+title: The four layers
+description: Get the root keys · map the actions · automate it · recover — the whole product, in order.
+---
+
+Ringtail is four layers. The first two exist only to make the third possible; the fourth
+makes sure the first three never dead-end.
+
+## 1 — Get the root keys
+
+The only place a human is genuinely needed. A setup wizard (`open-url` → `paste` → `confirm`)
+plus local credential discovery plus the recipe fast-path. The goal is to shrink this to
+almost nothing: **one consent per provider, ever** — reused across every repo *and* every
+downstream automation.
+
+## 2 — Map the actions
+
+With a root grant in hand, the agent maps the repo-specific and cross-tool actions now
+possible: a Neon branch per environment, wire Infisical → Cloudflare Pages, set a Workers
+binding, point a domain, create the R2 bucket your code already references. The agent maps;
+the actions panel renders. This list is *living* — steer it in chat (see
+[Cross-tool actions](/docs/guides/cross-tool-actions)).
+
+## 3 — Automatically make it happen
+
+**This is the point.** With the root grant, everything downstream is `auto`: the agent
+orchestrates a chain of API calls and the work just happens, no human. Layers 1–2 exist only
+to make layer 3 possible.
+
+The automation bias: **default is auto-run; confirm is the exception, only for destructive.**
+Safe actions (create a DB branch, set an env var, wire a binding, create a bucket) just
+happen. Only irreversible ones (domain transfer, NS swap, delete) hard-confirm. The cockpit
+should feel like watching the agent work — cells flipping green, resources appearing.
+
+<Callout title="Orchestrate vs execute">
+The agent **orchestrates** (`executeStep` / `executeAction`); the daemon **executes** with
+the stored root creds and returns *status, not values*. Automation and "the agent never sees
+your secrets" coexist precisely because the agent triggers and the daemon does. See
+[The guarantee](/docs/concepts/the-guarantee).
+</Callout>
+
+## 4 — Recovery
+
+Never a dead end. A wrong or expired key, an insufficient scope, or a failed action (API
+error, rate-limit, conflict) is a **first-class state**, not an exception. Ringtail catches
+it, explains it in plain language, and routes to the fix. The agent **re-plans on failure** —
+it authors a recovery wizard or action from the error. Every failure surfaces a cause *and* a
+next step. See [Recovery](/docs/guides/recovery).

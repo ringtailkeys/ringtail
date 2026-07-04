@@ -1,0 +1,32 @@
+---
+title: Project-scoping
+description: Ringtail reads one project's .env.example as the manifest — and fans each key out across the environment axis.
+---
+
+Ringtail is **project-scoped**. You point it at a local project and it reads that project's
+`.env.example` as the manifest — the shopping list of every credential the project needs.
+The connection grid is built directly from it: providers × environments.
+
+Only **names and paths** cross the boundary during selection — never file contents, nothing
+secret.
+
+## The environment axis
+
+`local · dev · staging · prod`.
+
+- **local** — your machine, `.env.local`, localhost. The only environment that touches your
+  disk.
+- **dev · staging · prod** — deployed. Secrets go to **Infisical only**, never your disk.
+  Each environment gets its own scoped keys and resources (e.g. a Neon branch per env).
+
+Sink routing follows the axis: `local → .env.local`; `dev / staging / prod → Infisical`.
+`syncCredential` fans one acquired key out per environment so a single consent provisions the
+whole row.
+
+## Local credential discovery
+
+Before asking you for anything, Ringtail scans **known** credential stores — `.env.local`,
+`~/.ringtail`, `~/.aws/credentials`, `~/.config/gh`, `~/.wrangler` / `~/.cloudflared`, and the
+environment — validates what it finds, reuses complete root grants, and only prompts for real
+gaps. Known locations only, local-only, and transparent about what it reused. It never scans
+your whole disk.
