@@ -12,7 +12,9 @@ ringtail — provision every API key a new project needs.
 
 Usage:
   ringtail            Print the plan (reads ./.env.example — the manifest).
-  ringtail up         Boot the daemon + dashboard and open the cockpit.
+  ringtail up         Boot the daemon (serving the dashboard) and open the cockpit.
+  ringtail up --project <path>
+                      Same, preselecting the project at <path> (skips the picker).
   ringtail --json     Agent mode: JSON status of what's MISSING (no secret values).
   ringtail --help     Show this help.
 ```
@@ -24,9 +26,13 @@ present and `○` for missing, and a count of how many are left to provision.
 
 ## `ringtail up`
 
-Boots the daemon (MCP + SSE + `/api`) and the dashboard (the Vite SPA), waits for the daemon's
-`/health`, then opens the cockpit in your browser. Ports come from `@ringtail/config`
-(`DAEMON_PORT`, `DASHBOARD_PORT`) — never hardcoded. Ctrl-C tears both down.
+Boots the daemon on a free localhost port and opens the cockpit in your browser. The daemon
+**serves the built dashboard itself** (`apps/dashboard/dist`), so the UI, `/api/*`, `/events`,
+and `/mcp` are ALL one origin on one port — one process, no Vite dev server. If the dashboard
+isn't built yet, `up` builds it first. Ctrl-C stops the daemon.
+
+Pass `--project <path>` to preselect the project (the daemon rebuilds the grid from that dir's
+`.env.example` and skips the picker); otherwise the dashboard's project picker handles it.
 
 ## `ringtail --json`
 
@@ -40,5 +46,5 @@ coding agent can read what's left to do:
 }
 ```
 
-`--json` also works with `up` as a dry-run: it reports what `up` *would* boot (the daemon +
-dashboard URLs) without spawning anything — testable and CI-safe.
+`--json` also works with `up` as a dry-run: it reports what `up` *would* serve (the dashboard
+dist path + whether it's built) without spawning anything — testable and CI-safe.

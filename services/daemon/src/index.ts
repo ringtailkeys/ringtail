@@ -12,6 +12,7 @@ import {
 } from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
+import { serveStatic } from "hono/bun";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
@@ -45,6 +46,12 @@ export interface DaemonOpts {
    * already-connected. Off by default so the in-process tests stay deterministic;
    * `ringtail up` turns it on. */
   discover?: boolean;
+  /** Absolute path to the BUILT dashboard (`apps/dashboard/dist`). When set, the
+   * daemon serves it as static assets at `/` with SPA fallback → the dashboard,
+   * `/api/*`, `/events`, and `/mcp` are ALL one origin on the daemon's port
+   * (architecture.md §"The daemon" — serves the dashboard AND the MCP). Unset in
+   * Dev/Tilt, where Vite serves the SPA cross-origin. */
+  servePath?: string;
 }
 
 export interface Daemon {
@@ -266,26 +273,52 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     });
   });
 
+  // ── served (prod) mode: the built dashboard, same-origin ───────────────────
+  // Registered LAST so /health, /api/*, /events, /mcp all match first; only
+  // unclaimed paths fall through to static files. `/` → index.html, `/assets/*`
+  // → hashed bundles, and any other GET → index.html (SPA fallback). This is what
+  // makes `ringtail up` ONE process on ONE origin (no Vite dev server).
+  if (opts.servePath) {
+    const root = opts.servePath;
+    app.use("*", serveStatic({ root }));
+    app.get("*", serveStatic({ path: "index.html", root }));
+  }
+
   return { app, token, store };
 }
 
 // ── real entry: `ringtail up` boots the daemon on 127.0.0.1 and prints the token ─
 if (import.meta.main) {
   const port = Number(process.env.PORT) || getEnv().DAEMON_PORT;
-  const { app, token } = createDaemon({
+  // RINGTAIL_SERVE_DIST → served mode (the daemon serves the built dashboard on its
+  // own port, one origin). Set by `ringtail up`; unset under Tilt (Vite serves it).
+  const servePath = process.env.RINGTAIL_SERVE_DIST || undefined;
+  const { app, token, store } = createDaemon({
     envLocalPath: process.env.RINGTAIL_ENV_LOCAL,
     discover: true,
+    servePath,
   });
+  // RINGTAIL_PROJECT → preselect the project (skips the ② picker). Must hold a
+  // `.env.example`; the grid is rebuilt from it, same as POST /api/project.
+  const projectPath = process.env.RINGTAIL_PROJECT;
+  if (projectPath && existsSync(join(projectPath, ".env.example"))) {
+    store.setProject({ path: projectPath, name: basename(projectPath) });
+    store.setGrid(gridFromExample(join(projectPath, ".env.example")));
+  }
   const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
-  const dashPort = getEnv().DASHBOARD_PORT;
+  const origin = `http://127.0.0.1:${server.port}`;
   // The boot line — MCP URL + session token + dashboard. Bind is 127.0.0.1 only.
+  // In served mode the dashboard is same-origin on this port; else it's the Vite dev URL.
+  const dashboardLine = servePath
+    ? `  dashboard: ${origin}   (served here · same origin)`
+    : `  dashboard: http://127.0.0.1:${getEnv().DASHBOARD_PORT}   (VITE_DAEMON_URL=${origin})`;
   console.log(
     [
       "",
       "  ringtail daemon — your keys, raided · washed · stashed",
-      `  MCP:       http://127.0.0.1:${server.port}/mcp   (Authorization: Bearer <token>)`,
-      `  events:    http://127.0.0.1:${server.port}/events?token=<token>`,
-      `  dashboard: http://127.0.0.1:${dashPort}   (VITE_DAEMON_URL=http://127.0.0.1:${server.port})`,
+      `  MCP:       ${origin}/mcp   (Authorization: Bearer <token>)`,
+      `  events:    ${origin}/events?token=<token>`,
+      dashboardLine,
       `  token:     ${token}`,
       "  bind:      127.0.0.1 only · zero telemetry",
       "",

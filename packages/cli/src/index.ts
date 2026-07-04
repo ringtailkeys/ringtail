@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { getEnv } from "@ringtail/config";
+import { spawnSync } from "node:child_process";
 import { readPlan, type PlanEntry } from "@ringtail/core";
 
 /**
@@ -14,7 +15,9 @@ const HELP = `ringtail — provision every API key a new project needs.
 
 Usage:
   ringtail            Print the plan (reads ./.env.example — the manifest).
-  ringtail up         Boot the daemon + dashboard and open the cockpit.
+  ringtail up         Boot the daemon (serving the dashboard) and open the cockpit.
+  ringtail up --project <path>
+                      Same, preselecting the project at <path> (skips the picker).
   ringtail --json     Agent mode: JSON status of what's MISSING (no secret values).
   ringtail --help     Show this help.
 
@@ -72,69 +75,106 @@ function findRepoRoot(start: string): string | null {
   }
 }
 
-/** Open a URL in the default browser (macOS `open`, else `xdg-open`). Best-effort. */
+/** Open a URL in the default browser (macOS `open`, Windows `start`, else
+ * `xdg-open`). Best-effort — headless boxes just read the printed URL. */
 function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+  const argv =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["cmd", "/c", "start", "", url]
+        : ["xdg-open", url];
   try {
-    Bun.spawn([cmd, url], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" });
   } catch {
     // headless / no opener — the URL is printed anyway.
   }
 }
 
-async function up(json: boolean): Promise<number> {
-  // Ports come from @ringtail/config (never hardcoded).
-  const { DAEMON_PORT, DASHBOARD_PORT } = getEnv();
-  const daemonUrl = `http://localhost:${DAEMON_PORT}`;
-  const dashboardUrl = `http://localhost:${DASHBOARD_PORT}`;
+/** Grab an ephemeral free localhost port (ask the OS for :0, read it, release).
+ * ponytail: tiny race between release and the daemon's bind — fine for a local,
+ * single-user boot; retry-on-EADDRINUSE only if that ever bites. */
+function freePort(): Promise<number> {
+  return new Promise((res, rej) => {
+    const srv = createServer();
+    srv.on("error", rej);
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      srv.close(() => res(port));
+    });
+  });
+}
 
-  if (json) {
-    // Dry-run: report what `up` WOULD boot (no spawn) — testable + CI-safe.
-    console.log(JSON.stringify({ bootDaemon: daemonUrl, openDashboard: dashboardUrl }, null, 2));
-    return 0;
-  }
-
+async function up(json: boolean, projectPath?: string): Promise<number> {
   const root = findRepoRoot(import.meta.dir);
   if (!root) {
     console.error("Could not locate the ringtail monorepo root (services/daemon missing).");
     return 1;
   }
+  const distDir = join(root, "apps/dashboard/dist");
 
-  console.log(`ringtail up\n  daemon    → ${daemonUrl}\n  dashboard → ${dashboardUrl}\n`);
+  if (json) {
+    // Dry-run: report what `up` WOULD boot (no spawn) — testable + CI-safe. ONE origin
+    // now: the daemon serves the built dashboard on its own port.
+    console.log(
+      JSON.stringify(
+        { origin: "http://127.0.0.1:<free-port>", serves: distDir, built: existsSync(distDir) },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
 
-  // Boot the daemon (MCP + SSE + /api) and the dashboard (Vite SPA). Both inherit
-  // stdio so the daemon's boot line (MCP URL + token) prints straight through.
+  // (a) Ensure the dashboard is BUILT — `ringtail up` serves it, never Vite dev.
+  if (!existsSync(join(distDir, "index.html"))) {
+    console.log("Building the dashboard (apps/dashboard/dist missing)…");
+    const built = spawnSync("bun", ["run", "build"], {
+      cwd: join(root, "apps/dashboard"),
+      stdio: "inherit",
+    });
+    if (built.status !== 0 || !existsSync(join(distDir, "index.html"))) {
+      console.error("Dashboard build failed — cannot serve the cockpit.");
+      return 1;
+    }
+  }
+
+  // (b) Boot the daemon in SERVED mode on a free localhost port. One process, one
+  // origin: it serves the dashboard AND /api + /events + /mcp. Spawned as a child
+  // (not imported) — the CLI is type:package and must not cross into a service.
+  const port = await freePort();
+  const origin = `http://127.0.0.1:${port}`;
+  console.log(`ringtail up\n  cockpit → ${origin}   (daemon + dashboard, one origin)\n`);
+
   const daemon = Bun.spawn(["bun", join(root, "services/daemon/src/index.ts")], {
-    cwd: root,
+    cwd: projectPath ?? root,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      RINGTAIL_SERVE_DIST: distDir,
+      ...(projectPath ? { RINGTAIL_PROJECT: resolve(projectPath) } : {}),
+    },
     stdio: ["inherit", "inherit", "inherit"],
   });
-  const dashboard = Bun.spawn(["bun", "run", "dev"], {
-    cwd: join(root, "apps/dashboard"),
-    stdio: ["ignore", "inherit", "inherit"],
-  });
 
-  const stop = () => {
-    daemon.kill();
-    dashboard.kill();
-  };
+  const stop = () => daemon.kill();
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
-  // Wait for the daemon to answer /health, then open the dashboard.
+  // (c) Wait for the daemon to answer /health, then open the browser to the cockpit.
   for (let i = 0; i < 50; i++) {
     try {
-      if ((await fetch(`${daemonUrl}/health`)).ok) break;
+      if ((await fetch(`${origin}/health`)).ok) break;
     } catch {
       // not up yet
     }
     await new Promise((r) => setTimeout(r, 200));
   }
-  openBrowser(dashboardUrl);
-  console.log(`\n  dashboard opening → ${dashboardUrl}   (Ctrl-C to stop)\n`);
+  openBrowser(origin);
+  console.log(`\n  cockpit opening → ${origin}   (Ctrl-C to stop)\n`);
 
-  // Foreground: block on the daemon; tear the dashboard down when it exits.
+  // (d) Foreground: block until the daemon exits (Ctrl-C).
   const code = await daemon.exited;
-  dashboard.kill();
   return code ?? 0;
 }
 
@@ -147,7 +187,12 @@ export function run(argv: string[]): number | Promise<number> {
     return 0;
   }
   const cmd = argv.find((a) => !a.startsWith("-"));
-  if (cmd === "up") return up(json);
+  if (cmd === "up") {
+    // --project <path> preselects the project (else the dashboard's ② picker handles it).
+    const pi = argv.indexOf("--project");
+    const projectPath = pi >= 0 ? argv[pi + 1] : undefined;
+    return up(json, projectPath);
+  }
   if (cmd && cmd !== "plan") {
     console.error(`Unknown command: ${cmd}\n`);
     console.log(HELP);
