@@ -23,16 +23,25 @@ The #1 trust claim and the product's spine. It is an **enforced, verifiable inva
 
 We stand behind it by making it *structurally true and provable*, not by asking to be believed.
 
-## The three layers (the whole product, in order)
+## The four layers (the whole product, in order)
 1. **Get the root keys** — the ONLY place a human is needed. The Wizard (`open-url`/`paste`/`confirm`) + local discovery + the recipe fast-path. **Goal: shrink this to almost nothing** — one consent per provider, EVER, reused across every repo *and* every downstream automation.
 2. **Map the actions** — `mapActions` → the repo-specific + cross-tool actions now possible: a Neon branch per env, wire Infisical → CF Pages, set a Workers binding, point the domain, create the R2 bucket your code already references. Agent maps; the actions panel renders.
 3. **Automatically make it happen — THE POINT.** With the root grant, everything downstream is `auto`: the agent orchestrates a chain of API calls and the work *just happens*, no human. Layers 1–2 exist only to make layer 3 possible. **Do not forget this is the point** — Ringtail is not a form you fill, it's an agent that does the work while you watch.
+4. **Recovery — never a dead end.** A wrong/expired key, an insufficient scope, or a failed action (API error, rate-limit, conflict) is a **first-class state**, not an exception. Ringtail catches it, explains it in plain language, and routes to the fix: re-paste/re-consent for a bad key; the *exact* missing scope + a deep-link (or the one box to tick) for insufficient scope; retry / alternative / an agent-authored manual fallback for a failed action. The agent **re-plans on failure** — it authors a recovery wizard/action from the error + Context7. Maps to the already-built `wrong-scope` / `failed` StatusChip states + Rocco's error pose. Every failure surfaces a cause *and* a next step.
 
 ### Orchestrate vs execute (how layer 3 keeps THE GUARANTEE)
 The **agent orchestrates** (`executeStep` / `executeAction`); the **daemon executes** with the stored root creds. The agent is the conductor — it never holds a secret; the daemon holds the creds, makes the API calls, and returns *status, not values*. Automation and "the agent never sees your secrets" coexist precisely because the agent *triggers* and the daemon *does*.
 
 ### The automation bias
 **Default = auto-run. Confirm is the exception, only for destructive.** Safe actions (create a DB branch, set an env var, wire a binding, create a bucket) just happen — making the user approve every safe step kills the magic. Only irreversible ones (domain transfer, NS swap, delete) hard-confirm. The dashboard should feel like *watching the agent work* — cells flipping green, steps checking off, resources appearing.
+
+## The dashboard is a conversation, not just a board
+The dashboard has a **chat panel** — you talk to the same agent that's driving everything, right there in the UI. The agent both **converses** (chat) and **renders** (grid, wizards, actions) over the same MCP connection: chat is the *direction* channel, the components are the *state* channel, one agent behind both.
+- **Directable actions.** The layer-2 action list is *living*, not fixed. "also set up Stripe" · "skip the R2 bucket" · "add a staging env" → the agent adds / removes / adjusts actions to match what you're trying to achieve, and re-renders the panel. You steer; it re-maps.
+- **Talk it through.** "why does this need that scope?" · "what breaks if I skip Infisical?" — the agent answers in the chat, grounded in your repo + Context7, without leaving the dashboard.
+- **Same guarantee.** Chat is about *intent and actions*, never secret values — paste-bypasses-the-agent still holds.
+
+Generative-UI **+ chat**: an operator you converse with that also paints a live cockpit. Renders via `renderWizard`/`renderActions`/`updateStatus`; the daemon relays the agent↔user chat to the panel.
 
 ## The daemon (always-on local host)
 A Hono daemon is the single local host. It:
