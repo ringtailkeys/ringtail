@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { GRID_ENVS, provisionCredential, WizardSchema, type Environment } from "@ringtail/core";
-import { putCredential } from "@ringtail/store";
 import { z } from "zod";
+import { applyStep } from "./submit";
 import type { DaemonStore } from "./state";
 
 /**
@@ -119,23 +119,7 @@ export function buildMcpServer(
         "Complete a wizard step. For a paste step the value flows user → Ringtail (validated + stored), never echoed. Returns status + var name only.",
       inputSchema: { stepId: z.string().min(1), value: z.string().min(1).optional() },
     },
-    async ({ stepId, value }) => {
-      const step = store.findStep(stepId);
-      if (step.kind === "paste") {
-        if (!value) throw new Error(`paste step ${stepId} requires a value`);
-        const varName = step.payload?.varName ?? stepId;
-        // value → disk (@ringtail/store), NEVER into the snapshot or the response.
-        putCredential(varName, {
-          value,
-          provider: store.snapshot().wizard?.provider ?? "unknown",
-          updatedAt: new Date().toISOString(),
-        });
-        store.markStep(stepId, "done");
-        return ok({ stepId, varName, status: "done" }); // names + status only
-      }
-      store.markStep(stepId, "done");
-      return ok({ stepId, status: "done" });
-    },
+    async ({ stepId, value }) => ok(applyStep(store, stepId, value)),
   );
 
   // executeStep(stepId) → the daemon runs the mock loop (mint → validate-after-mint

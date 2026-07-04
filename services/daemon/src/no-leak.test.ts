@@ -16,6 +16,9 @@ import { createDaemon } from "./index";
 //   MINTED  — the mock recipe mints it internally (grant 'full' → 'mock-token-full').
 const PASTED = "SUPER-SECRET-SENTINEL-VALUE-1234";
 const MINTED = "mock-token-full";
+// A third secret, fed via the BROWSER paste path (POST /api/step, user → daemon) —
+// same invariant: it must never appear in the POST response or the SSE stream.
+const BROWSER_PASTED = "BROWSER-ONLY-SENTINEL-VALUE-5678";
 
 const WIZARD: Wizard = {
   id: "wiz-cloudflare",
@@ -115,13 +118,24 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
     await call("updateStatus", { provider: "cloudflare", env, status: "synced" });
   }
 
+  // ── the BROWSER paste path: POST the value straight to the daemon (user → daemon,
+  // never through the agent). Response must be status-only; value must not leak. ──
+  const stepRes = await fetch(`http://127.0.0.1:${port}/api/step`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stepId: "s-paste", value: BROWSER_PASTED }),
+  });
+  const stepBody = await stepRes.text();
+
   // let the SSE flush, then stop reading
   await new Promise((r) => setTimeout(r, 50));
   await reader.cancel();
   await pump;
   await client.close();
 
-  const daemonToClient = [...toolResults, ...sseChunks].join("\n");
+  const daemonToClient = [...toolResults, ...sseChunks, stepBody].join("\n");
+  expect(stepBody).not.toContain(BROWSER_PASTED);
+  expect(daemonToClient).not.toContain(BROWSER_PASTED);
 
   // The paste HELD its value (proves the loop actually ran), but the response is
   // status-only, and NOTHING the daemon sent back carries either secret value.

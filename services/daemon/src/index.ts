@@ -3,8 +3,10 @@ import { getEnv } from "@ringtail/config";
 import { connectionMap, defaultEnvironment, provisionCredential } from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
+import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
 import { DaemonStore } from "./state";
+import { applyStep } from "./submit";
 
 /**
  * @ringtail/daemon — the LOCAL machine surface AND the MCP server, in ONE process
@@ -87,6 +89,30 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // ponytail: loopback-only convenience for P2; real `up` embeds the token in the
   // served HTML instead of exposing this endpoint.
   app.get("/api/session", (c) => c.json({ token }));
+
+  // POST /api/step — the BROWSER paste path (architecture.md §"Step kinds · paste").
+  // The value flows user → daemon → validate → @ringtail/store, NEVER through the
+  // agent. Shares applyStep with the MCP submitStep tool; the response is status +
+  // var NAME only (no value → check:no-leak stays green). Token-gated like /mcp.
+  app.post("/api/step", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { stepId?: string; value?: string };
+    if (!body.stepId) return c.json({ error: "stepId required" }, 400);
+    try {
+      return c.json(applyStep(store, body.stepId, body.value));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // GET /api/agents — detected coding-agent CLIs on PATH + the exact MCP-connect
+  // command per agent (URL from THIS request's origin + the session token). The
+  // dashboard renders the picker (architecture.md §"Entry & agent selection").
+  app.get("/api/agents", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
+    return c.json({ agents: detectAgents(mcpUrl, token) });
+  });
 
   // ── MCP over Streamable HTTP (Web-Standard transport) ──────────────────────
   // Stateless JSON mode: our live state lives in the shared DaemonStore, not an MCP

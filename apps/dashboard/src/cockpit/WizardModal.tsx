@@ -1,5 +1,6 @@
 import type { Step, Wizard } from "@ringtail/core";
 import { Button, Eyebrow, Modal, StatusDot, font } from "@ringtail/ui";
+import { useState } from "react";
 
 /**
  * The UNIVERSAL wizard renderer — one component paints any agent-authored Wizard.
@@ -9,9 +10,12 @@ import { Button, Eyebrow, Modal, StatusDot, font } from "@ringtail/ui";
  *   daemon streams check-offs. "Ringtail owns every pixel" — the agent fills slots.
  *
  * THE TRUST LINCHPIN: a `paste` input shows "🔒 goes to Ringtail, not the agent."
- * ponytail: the input is presentational in P2 — the driver simulates submitStep;
- * wiring the browser POST is P2.5. The affordance is the load-bearing part.
+ * When `onSubmit` is supplied (the live cockpit) the paste value POSTs user →
+ * daemon → @ringtail/store, NEVER through the agent. Without it (Storybook) the
+ * input stays presentational. The affordance is always shown.
  */
+
+type SubmitFn = (stepId: string, value: string) => Promise<unknown>;
 
 const STEP_STATE: Record<
   Step["status"],
@@ -23,7 +27,15 @@ const STEP_STATE: Record<
   failed: { dot: "wrong-scope", label: "failed" },
 };
 
-export function WizardModal({ wizard, onClose }: { wizard: Wizard; onClose?: () => void }) {
+export function WizardModal({
+  wizard,
+  onClose,
+  onSubmit,
+}: {
+  wizard: Wizard;
+  onClose?: () => void;
+  onSubmit?: SubmitFn;
+}) {
   return (
     <Modal open title={wizard.title} onClose={onClose}>
       {wizard.provider && <Eyebrow>{wizard.provider} · the raid</Eyebrow>}
@@ -66,7 +78,7 @@ export function WizardModal({ wizard, onClose }: { wizard: Wizard; onClose?: () 
                 {step.description}
               </p>
             )}
-            <StepBody step={step} />
+            <StepBody step={step} onSubmit={onSubmit} />
           </li>
         ))}
       </ol>
@@ -74,7 +86,70 @@ export function WizardModal({ wizard, onClose }: { wizard: Wizard; onClose?: () 
   );
 }
 
-function StepBody({ step }: { step: Step }) {
+function PasteStep({ step, onSubmit }: { step: Step; onSubmit?: SubmitFn }) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const done = step.status === "done";
+  const live = Boolean(onSubmit) && !done;
+
+  async function submit() {
+    if (!onSubmit || !value) return;
+    setBusy(true);
+    try {
+      // The value leaves the browser ONLY here — straight to the daemon. It never
+      // touches the agent, and we drop it from state right after the POST.
+      await onSubmit(step.id, value);
+      setValue("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <input
+        type="password"
+        placeholder={step.payload?.varName ?? "paste value"}
+        value={value}
+        disabled={!live || busy}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void submit();
+        }}
+        style={{
+          width: "100%",
+          padding: "8px 10px",
+          fontFamily: font.mono,
+          fontSize: 13,
+          background: "var(--surface)",
+          color: "var(--ink)",
+          border: "1px solid var(--line)",
+          borderRadius: "var(--r-sm)",
+        }}
+      />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          marginTop: 6,
+        }}
+      >
+        <span style={{ fontFamily: font.mono, fontSize: 11, color: "var(--green)" }}>
+          🔒 goes to Ringtail, not the agent
+        </span>
+        {live && (
+          <Button variant="primary" disabled={!value || busy} onClick={() => void submit()}>
+            {busy ? "sending…" : "submit"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StepBody({ step, onSubmit }: { step: Step; onSubmit?: SubmitFn }) {
   switch (step.kind) {
     case "open-url":
       return (
@@ -102,28 +177,7 @@ function StepBody({ step }: { step: Step }) {
         </div>
       );
     case "paste":
-      return (
-        <div>
-          <input
-            type="password"
-            placeholder={step.payload?.varName ?? "paste value"}
-            disabled
-            style={{
-              width: "100%",
-              padding: "8px 10px",
-              fontFamily: font.mono,
-              fontSize: 13,
-              background: "var(--surface)",
-              color: "var(--ink)",
-              border: "1px solid var(--line)",
-              borderRadius: "var(--r-sm)",
-            }}
-          />
-          <div style={{ fontFamily: font.mono, fontSize: 11, color: "var(--green)", marginTop: 6 }}>
-            🔒 goes to Ringtail, not the agent
-          </div>
-        </div>
-      );
+      return <PasteStep step={step} onSubmit={onSubmit} />;
     case "auto":
       return (
         <div style={{ fontFamily: font.mono, fontSize: 12, color: "var(--berry)" }}>

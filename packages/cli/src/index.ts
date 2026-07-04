@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { getEnv } from "@ringtail/config";
 import { readPlan, type PlanEntry } from "@ringtail/core";
 
@@ -13,7 +14,7 @@ const HELP = `ringtail — provision every API key a new project needs.
 
 Usage:
   ringtail            Print the plan (reads ./.env.example — the manifest).
-  ringtail up         Boot the daemon + open the dashboard (stub).
+  ringtail up         Boot the daemon + dashboard and open the cockpit.
   ringtail --json     Agent mode: JSON status of what's MISSING (no secret values).
   ringtail --help     Show this help.
 
@@ -57,31 +58,89 @@ function plan(json: boolean): number {
   return 0;
 }
 
-function up(json: boolean): number {
-  // ponytail: stub — the real `up` boots services/daemon and opens the dashboard.
-  // Ports come from @ringtail/config (never hardcoded), which is why the CLI
-  // legitimately depends on config as well as core.
-  const { DAEMON_PORT, DASHBOARD_PORT } = getEnv();
-  const daemon = `http://localhost:${DAEMON_PORT}`;
-  const dashboard = `http://localhost:${DASHBOARD_PORT}`;
-  if (json) {
-    console.log(
-      JSON.stringify(
-        { stub: true, wouldBootDaemon: daemon, wouldOpenDashboard: dashboard },
-        null,
-        2,
-      ),
-    );
-    return 0;
+/** Walk up from `start` until a dir holds `services/daemon/src/index.ts` — the
+ * monorepo root. ponytail: example repo is run in-tree (never published), so a
+ * filesystem walk beats a bare `@ringtail/daemon` specifier that would (a) trip the
+ * type:package→service boundary lint and (b) get bundled into the CLI by esbuild. */
+function findRepoRoot(start: string): string | null {
+  let dir = start;
+  for (;;) {
+    if (existsSync(join(dir, "services/daemon/src/index.ts"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
-  console.log(
-    `ringtail up (stub)\n  would boot the daemon    → ${daemon}\n  would open the dashboard → ${dashboard}\n\nNot wired yet — this scaffolds the command surface.`,
-  );
-  return 0;
 }
 
-/** Parse argv and dispatch. Returns the process exit code. */
-export function run(argv: string[]): number {
+/** Open a URL in the default browser (macOS `open`, else `xdg-open`). Best-effort. */
+function openBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+  try {
+    Bun.spawn([cmd, url], { stdout: "ignore", stderr: "ignore" });
+  } catch {
+    // headless / no opener — the URL is printed anyway.
+  }
+}
+
+async function up(json: boolean): Promise<number> {
+  // Ports come from @ringtail/config (never hardcoded).
+  const { DAEMON_PORT, DASHBOARD_PORT } = getEnv();
+  const daemonUrl = `http://localhost:${DAEMON_PORT}`;
+  const dashboardUrl = `http://localhost:${DASHBOARD_PORT}`;
+
+  if (json) {
+    // Dry-run: report what `up` WOULD boot (no spawn) — testable + CI-safe.
+    console.log(JSON.stringify({ bootDaemon: daemonUrl, openDashboard: dashboardUrl }, null, 2));
+    return 0;
+  }
+
+  const root = findRepoRoot(import.meta.dir);
+  if (!root) {
+    console.error("Could not locate the ringtail monorepo root (services/daemon missing).");
+    return 1;
+  }
+
+  console.log(`ringtail up\n  daemon    → ${daemonUrl}\n  dashboard → ${dashboardUrl}\n`);
+
+  // Boot the daemon (MCP + SSE + /api) and the dashboard (Vite SPA). Both inherit
+  // stdio so the daemon's boot line (MCP URL + token) prints straight through.
+  const daemon = Bun.spawn(["bun", join(root, "services/daemon/src/index.ts")], {
+    cwd: root,
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+  const dashboard = Bun.spawn(["bun", "run", "dev"], {
+    cwd: join(root, "apps/dashboard"),
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  const stop = () => {
+    daemon.kill();
+    dashboard.kill();
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  // Wait for the daemon to answer /health, then open the dashboard.
+  for (let i = 0; i < 50; i++) {
+    try {
+      if ((await fetch(`${daemonUrl}/health`)).ok) break;
+    } catch {
+      // not up yet
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  openBrowser(dashboardUrl);
+  console.log(`\n  dashboard opening → ${dashboardUrl}   (Ctrl-C to stop)\n`);
+
+  // Foreground: block on the daemon; tear the dashboard down when it exits.
+  const code = await daemon.exited;
+  dashboard.kill();
+  return code ?? 0;
+}
+
+/** Parse argv and dispatch. Returns the process exit code (async for `up`, which
+ * boots long-running child processes and blocks in the foreground). */
+export function run(argv: string[]): number | Promise<number> {
   const json = argv.includes("--json");
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(HELP);
