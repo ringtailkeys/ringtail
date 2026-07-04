@@ -1,6 +1,8 @@
 import {
   gridSeed,
   type Action,
+  type ChatChoice,
+  type ChatMessage,
   type CredentialStatus,
   type DaemonSnapshot,
   type GridEnv,
@@ -26,12 +28,17 @@ export class DaemonStore {
   #grid: GridRow[] = gridSeed();
   #wizard: Wizard | null = null;
   #actions: Action[] = [];
+  #chat: ChatMessage[] = [];
+  /** user → agent queue: messages the user typed, waiting for the agent to drain
+   * (pollChat). The transcript (#chat) is display; this is delivery. Value-free —
+   * intent text only, same as #chat. */
+  #inbox: string[] = [];
   readonly #subs = new Set<Subscriber>();
 
   /** ponytail: returns live refs (mutate-then-emit). Fine single-threaded; the
    * SSE layer JSON-serializes at send time so subscribers get an immutable copy. */
   snapshot(): DaemonSnapshot {
-    return { grid: this.#grid, wizard: this.#wizard, actions: this.#actions };
+    return { grid: this.#grid, wizard: this.#wizard, actions: this.#actions, chat: this.#chat };
   }
 
   /** Subscribe to state changes; primes the subscriber with the current snapshot. */
@@ -53,6 +60,19 @@ export class DaemonStore {
     const row = this.#grid.find((r) => r.provider === provider);
     if (!row) throw new Error(`unknown provider: ${provider}`);
     row.envs[env] = status;
+    this.#emit();
+  }
+
+  /** Seed the grid from local discovery: a provider whose root grant we already
+   * hold shows `validated` (already-connected) across every env instead of `missing`
+   * — the human paste step is skippable. Names only; the real validate-after-mint
+   * still runs at provision, so a stale discovered key is caught there. */
+  markDiscovered(providers: string[]): void {
+    for (const p of providers) {
+      const row = this.#grid.find((r) => r.provider === p);
+      if (!row) continue;
+      for (const e of Object.keys(row.envs) as GridEnv[]) row.envs[e] = "validated";
+    }
     this.#emit();
   }
 
@@ -79,5 +99,35 @@ export class DaemonStore {
     const step = this.#wizard?.steps.find((s) => s.id === stepId);
     if (!step) throw new Error(`unknown step: ${stepId}`);
     return step;
+  }
+
+  // ── chat: the direction channel (relayed through the daemon) ────────────────
+
+  /** Agent → user (sendChat MCP tool). Appends to the transcript, pushes to the UI.
+   * Optional `choices` render as tappable pills below the text (Delulus-chat style) —
+   * intent labels/values only, never a secret value. */
+  sendAgentMessage(text: string, choices?: ChatChoice[]): void {
+    this.#chat.push({
+      role: "agent",
+      text,
+      ts: Date.now(),
+      ...(choices?.length ? { choices } : {}),
+    });
+    this.#emit();
+  }
+
+  /** User → agent (POST /api/chat). Appends to the transcript (so it renders at once)
+   * AND queues it for the agent to drain via pollChat. Intent text only, never a value. */
+  postUserMessage(text: string): void {
+    this.#chat.push({ role: "user", text, ts: Date.now() });
+    this.#inbox.push(text);
+    this.#emit();
+  }
+
+  /** The agent drains pending user direction (pollChat). Returns + clears the inbox. */
+  drainInbox(): string[] {
+    const pending = this.#inbox;
+    this.#inbox = [];
+    return pending;
   }
 }

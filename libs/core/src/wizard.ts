@@ -56,6 +56,11 @@ export const ActionSchema = z.object({
   why: z.string(),
   prerequisites: z.array(z.string()),
   danger: DangerSchema,
+  // Optional dispatch key for a repo-specific / cross-tool TYPED executor (e.g.
+  // "domain-to-cf"). When set + known, the daemon runs that executor with the
+  // stored root creds; when absent, the action falls back to its wizard's
+  // provisioning loop. Names/intent only — an executor NEVER returns a secret value.
+  executor: z.string().optional(),
   wizard: WizardSchema,
 });
 export type Action = z.infer<typeof ActionSchema>;
@@ -74,12 +79,46 @@ export interface GridRow {
 }
 
 /**
+ * A tappable choice pill in the chat (Delulus-chat style). The agent offers next
+ * moves as pills, not a wall of text. TRUST BOUNDARY: `label` is what the pill shows,
+ * `value` is the reply INTENT posted back through the user → agent path when tapped —
+ * both are intent/text only, NEVER a secret value. paste still bypasses the agent, so
+ * a choice can only ever carry a name/intent (check:no-leak stays green).
+ */
+export const ChatChoiceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  value: z.string().min(1),
+});
+export type ChatChoice = z.infer<typeof ChatChoiceSchema>;
+
+/**
+ * One line in the dashboard conversation. The chat is the DIRECTION channel (the
+ * user steers; the agent converses) alongside the state channel (grid/wizard/actions),
+ * one agent behind both. Carries intent/TEXT only — NEVER a secret value; paste still
+ * bypasses the agent (user → daemon). `role` says who spoke; `ts` orders the thread.
+ * An agent line may offer `choices` — tappable pills rendered below the text. Zod, not
+ * an interface: it's the trust boundary — the daemon validates every agent-supplied
+ * message (malformed rejected) before it touches the snapshot.
+ */
+export const ChatMessageSchema = z.object({
+  role: z.enum(["agent", "user"]),
+  text: z.string(),
+  ts: z.number(),
+  choices: z.array(ChatChoiceSchema).optional(),
+});
+export type ChatMessage = z.infer<typeof ChatMessageSchema>;
+
+/**
  * The whole live daemon state, streamed to the dashboard over SSE. ONE source of
  * truth: MCP tool calls mutate it → the daemon pushes this snapshot → the cockpit
- * re-renders. Value-free by construction (grid = statuses, wizard = names + kinds).
+ * re-renders. Value-free by construction (grid = statuses, wizard = names + kinds,
+ * chat = intent text). The agent both converses (chat) and renders (grid/wizard/
+ * actions) over the same MCP connection — the dashboard is a conversation, not a board.
  */
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
   actions: Action[];
+  chat: ChatMessage[];
 }

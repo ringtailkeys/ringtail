@@ -1,0 +1,36 @@
+name: CI
+
+# The guarantee + the module boundaries fail the build in CI, not just locally.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.1.34
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx nx run-many -t typecheck
+
+      - name: Lint (module boundaries)
+        run: bunx nx run-many -t lint
+
+      - name: THE GUARANTEE (no secret ever reaches the agent)
+        run: bun run check:no-leak
+
+      - name: E2E (offline credential lifecycle)
+        run: cd libs/core && bun test

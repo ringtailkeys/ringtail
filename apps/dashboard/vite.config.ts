@@ -17,5 +17,13 @@ const brandAssets = fileURLToPath(new URL("../.brand-assets", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
-  server: { port, fs: { allow: [".", brandAssets] } },
+  // portless proxies dashboard.ringtail.localhost:1355 → this dev server; Vite 6
+  // blocks unknown Host headers, so whitelist the portless domain (a leading dot
+  // matches all *.ringtail.localhost subdomains).
+  server: {
+    port,
+    host: "127.0.0.1",
+    allowedHosts: [".ringtail.localhost"],
+    fs: { allow: [".", brandAssets] },
+  },
 });

@@ -155,6 +155,168 @@ async function main(): Promise<void> {
 
     if (!allSynced || !wroteLocal) throw new Error("demo did not reach synced");
     console.log("\n✓ P2 spine proven: the agent drove the full loop over MCP to synced.\n");
+
+    // ── Layer 4 · Recovery (never a dead end) ────────────────────────────────
+    // A wrong-scope run → caught as a typed failure → the agent re-plans a recovery
+    // wizard (re-consent with the EXACT missing scope) → re-do → synced. Same MCP
+    // surface, zero real cloud. The mock-recipe seam models "which key the user gave".
+    console.log("── ringtail Layer 4 · recovery (wrong-scope → fix → synced) ──");
+
+    const NEON_WIZARD: Wizard = {
+      id: "wiz-neon",
+      title: "Connect Neon",
+      provider: "neon",
+      steps: [
+        {
+          id: "neon-paste",
+          title: "Paste your Neon API key",
+          description: "🔒 goes to Ringtail, not the agent.",
+          kind: "paste",
+          payload: { varName: "NEON_API_KEY" },
+          status: "pending",
+        },
+        {
+          id: "neon-provision",
+          title: "Provision dev · staging · prod",
+          description: "Mint → validate-after-mint → provision → sync.",
+          kind: "auto",
+          danger: "safe",
+          status: "pending",
+        },
+      ],
+    };
+
+    await call("renderWizard", { wizard: NEON_WIZARD });
+    await call("submitStep", { stepId: "neon-paste", value: "neon-key-UNDER-SCOPED" });
+
+    console.log("\n[R1] executeStep(neon-provision) — the user's key is UNDER-SCOPED:");
+    process.env.RINGTAIL_MOCK_RECIPE = "mock-badscope"; // models a read-only key
+    const bad = await call("executeStep", { stepId: "neon-provision" });
+    console.log(
+      `  failure → status=${bad.failure?.status}  missing=[${bad.failure?.missing?.join(", ")}]  reason="${bad.failure?.reason}"`,
+    );
+    if (bad.failure?.status !== "wrong-scope" || !bad.failure?.missing?.includes("write")) {
+      throw new Error("recovery: expected a wrong-scope failure naming the missing `write` scope");
+    }
+    printGrid((await call("plan")).grid, "neon");
+
+    console.log("\n[R2] agent re-plans → a RECOVERY wizard (re-consent for the missing scope):");
+    const RECOVERY_WIZARD: Wizard = {
+      id: "wiz-neon-recovery",
+      title: "Fix Neon — add the missing scope",
+      provider: "neon",
+      steps: [
+        {
+          id: "neon-reconsent",
+          title: "Re-create the key WITH write access",
+          description: `Your last key was missing: ${bad.failure.missing.join(", ")}. Add it, then re-paste.`,
+          kind: "open-url",
+          payload: {
+            url: "https://console.neon.tech/app/settings/api-keys",
+            scopes: bad.failure.missing,
+          },
+          status: "pending",
+        },
+        {
+          id: "neon-repaste",
+          title: "Paste the correctly-scoped key",
+          description: "🔒 goes to Ringtail, not the agent.",
+          kind: "paste",
+          payload: { varName: "NEON_API_KEY" },
+          status: "pending",
+        },
+        {
+          id: "neon-reprovision",
+          title: "Retry provision dev · staging · prod",
+          description: "Mint → validate → provision → sync.",
+          kind: "auto",
+          danger: "safe",
+          status: "pending",
+        },
+      ],
+    };
+    await call("renderWizard", { wizard: RECOVERY_WIZARD });
+    await call("submitStep", { stepId: "neon-reconsent" });
+    await call("submitStep", { stepId: "neon-repaste", value: "neon-key-CORRECTLY-SCOPED" });
+
+    console.log("\n[R3] executeStep(neon-reprovision) — the re-scoped key now validates:");
+    process.env.RINGTAIL_MOCK_RECIPE = "mock"; // the fix: a full-scope key
+    const fixed = await call("executeStep", { stepId: "neon-reprovision" });
+    for (const r of fixed.results as Array<{ env: string; status: string }>) {
+      console.log(`  ${r.env.padEnd(8)} → ${r.status}`);
+    }
+    delete process.env.RINGTAIL_MOCK_RECIPE;
+    for (const env of ["local", "dev", "staging", "prod"] as const) {
+      await call("updateStatus", { provider: "neon", env, status: "synced" });
+    }
+
+    const neonFinal = (await call("plan")).grid as GridRow[];
+    printGrid(neonFinal, "neon");
+    const neon = neonFinal.find((r) => r.provider === "neon")!;
+    const neonSynced = (["local", "dev", "staging", "prod"] as const).every(
+      (e) => neon.envs[e] === "synced",
+    );
+    if (fixed.failure || !neonSynced) throw new Error("recovery did not reach synced");
+    console.log("\n✓ Layer 4 proven: wrong-scope caught → recovery wizard → re-do → synced.\n");
+
+    // ── P4 · the actions layer (repo-specific + cross-tool next steps) ────────
+    // With cloudflare connected, map the cross-tool next steps and run the first
+    // typed executor: domain→CF (point the domain's nameservers at Cloudflare).
+    // It's DESTRUCTIVE (an NS swap cuts over live DNS) → the daemon HARD-CONFIRMS:
+    // executeAction without confirmed returns needsConfirm and does NOT run; only a
+    // confirmed call executes. The agent triggers; the daemon executes (mock).
+    console.log("── ringtail P4 · actions layer (map → approve → confirm → execute) ──");
+
+    const DOMAIN_TO_CF = {
+      id: "domain-to-cf",
+      title: "Point krispy.ai at Cloudflare",
+      why: "Your app deploys to CF Pages — make Cloudflare authoritative for DNS.",
+      prerequisites: ["cloudflare"],
+      danger: "destructive" as const,
+      executor: "domain-to-cf",
+      wizard: {
+        id: "wiz-domain-cf",
+        title: "Point the domain at Cloudflare",
+        provider: "cloudflare",
+        steps: [
+          {
+            id: "dcf-confirm",
+            title: "Swap nameservers to Cloudflare",
+            description: "Destructive — cuts over live DNS. Requires explicit confirm.",
+            kind: "confirm" as const,
+            danger: "destructive" as const,
+            status: "pending" as const,
+          },
+        ],
+      },
+    };
+
+    console.log("\n[P1] mapActions([domain-to-cf]) — the cross-tool next step, validated:");
+    const mapped = await call("mapActions", { actions: [DOMAIN_TO_CF] });
+    for (const a of mapped.actions as Array<{ id: string; danger: string; executor?: string }>) {
+      console.log(`  ${a.id}  danger=${a.danger}  executor=${a.executor ?? "(wizard)"}`);
+    }
+    if (!mapped.actions?.some((a: { id: string }) => a.id === "domain-to-cf")) {
+      throw new Error("P4: mapActions did not store the domain-to-cf action");
+    }
+
+    console.log("\n[P2] executeAction(domain-to-cf) — no confirm → HARD-CONFIRM gate holds:");
+    const gate = await call("executeAction", { id: "domain-to-cf" });
+    console.log(`  → needsConfirm=${gate.needsConfirm}  (not executed — destructive)`);
+    if (gate.needsConfirm !== true || gate.result) {
+      throw new Error("P4: destructive action ran WITHOUT confirmation (hard-confirm broken)");
+    }
+
+    console.log("\n[P3] executeAction(domain-to-cf, confirmed) — the human confirms → executes:");
+    const done = await call("executeAction", { id: "domain-to-cf", confirmed: true });
+    console.log(`  → status=${done.result?.status}  ${done.result?.detail}`);
+    for (const ch of (done.result?.changes ?? []) as Array<{ field: string; to: string }>) {
+      console.log(`     ${ch.field} → ${ch.to}`);
+    }
+    if (done.result?.status !== "done" || !done.result?.changes?.[0]?.to?.includes("cloudflare")) {
+      throw new Error("P4: confirmed domain→CF did not execute to done with the CF nameservers");
+    }
+    console.log("\n✓ P4 proven: map → approve → hard-confirm → typed executor ran (mock).\n");
   } finally {
     await client.close();
     await server.stop(true);

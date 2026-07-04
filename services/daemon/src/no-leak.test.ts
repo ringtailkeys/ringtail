@@ -16,6 +16,9 @@ import { createDaemon } from "./index";
 //   MINTED  — the mock recipe mints it internally (grant 'full' → 'mock-token-full').
 const PASTED = "SUPER-SECRET-SENTINEL-VALUE-1234";
 const MINTED = "mock-token-full";
+// A third secret, fed via the BROWSER paste path (POST /api/step, user → daemon) —
+// same invariant: it must never appear in the POST response or the SSE stream.
+const BROWSER_PASTED = "BROWSER-ONLY-SENTINEL-VALUE-5678";
 
 const WIZARD: Wizard = {
   id: "wiz-cloudflare",
@@ -115,13 +118,24 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
     await call("updateStatus", { provider: "cloudflare", env, status: "synced" });
   }
 
+  // ── the BROWSER paste path: POST the value straight to the daemon (user → daemon,
+  // never through the agent). Response must be status-only; value must not leak. ──
+  const stepRes = await fetch(`http://127.0.0.1:${port}/api/step`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stepId: "s-paste", value: BROWSER_PASTED }),
+  });
+  const stepBody = await stepRes.text();
+
   // let the SSE flush, then stop reading
   await new Promise((r) => setTimeout(r, 50));
   await reader.cancel();
   await pump;
   await client.close();
 
-  const daemonToClient = [...toolResults, ...sseChunks].join("\n");
+  const daemonToClient = [...toolResults, ...sseChunks, stepBody].join("\n");
+  expect(stepBody).not.toContain(BROWSER_PASTED);
+  expect(daemonToClient).not.toContain(BROWSER_PASTED);
 
   // The paste HELD its value (proves the loop actually ran), but the response is
   // status-only, and NOTHING the daemon sent back carries either secret value.
@@ -132,4 +146,47 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
   // Positive control: the surface DID carry the value-free evidence (names + status).
   expect(daemonToClient).toContain("CLOUDFLARE_API_TOKEN"); // the var NAME
   expect(daemonToClient).toContain("synced");
+});
+
+// Layer 4 (recovery): a failure is a first-class, TYPED, value-free result. Drive
+// executeStep under the failing mock variants and assert the daemon surfaces a
+// wrong-scope / failed hook (reason + missing scope) — and STILL never a value.
+test("recovery: wrong-scope + failed-action surface a typed hook, never a secret value", async () => {
+  const port = server.port;
+  const client = new Client({ name: "leak-guard-recovery", version: "0.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+    requestInit: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  await client.connect(transport);
+  const results: string[] = [];
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const res = await client.callTool({ name, arguments: args });
+    results.push(JSON.stringify(res));
+    const text = (res.content as Array<{ text?: string }>)?.[0]?.text ?? "{}";
+    return JSON.parse(text) as {
+      failure?: { status?: string; missing?: string[]; reason?: string };
+    };
+  };
+
+  await call("renderWizard", { wizard: WIZARD });
+
+  // wrong-scope: an under-scoped key, caught at validate.
+  process.env.RINGTAIL_MOCK_RECIPE = "mock-badscope";
+  const wrong = await call("executeStep", { stepId: "s-auto" });
+  expect(wrong.failure?.status).toBe("wrong-scope");
+  expect(wrong.failure?.missing).toContain("write");
+
+  // failed action: a valid key, but the provision call rate-limits.
+  process.env.RINGTAIL_MOCK_RECIPE = "mock-failprovision";
+  const failed = await call("executeStep", { stepId: "s-auto" });
+  expect(failed.failure?.status).toBe("failed");
+  expect(failed.failure?.reason).toContain("rate limited");
+
+  delete process.env.RINGTAIL_MOCK_RECIPE;
+  await client.close();
+
+  // The failure payloads carry names/reasons only — never the minted secret value.
+  const blob = results.join("\n");
+  expect(blob).not.toContain(MINTED);
+  expect(blob).not.toContain("mock-token");
 });

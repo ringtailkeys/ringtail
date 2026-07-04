@@ -4,4 +4,4 @@
 // testable without spawning a process.
 import { run } from "./index";
 
-process.exit(run(process.argv.slice(2)));
+process.exit(await run(process.argv.slice(2)));

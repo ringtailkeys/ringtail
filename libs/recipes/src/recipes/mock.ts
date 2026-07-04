@@ -28,11 +28,26 @@ async function post(path: string, body: unknown): Promise<unknown> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`mock provider ${path} → HTTP ${res.status}`);
+  if (!res.ok) {
+    // Surface the provider's plain-language error (e.g. "rate limited…") so the
+    // engine can render a `failed` state with a human cause — never a secret value.
+    let detail = `HTTP ${res.status}`;
+    try {
+      const b = (await res.json()) as { error?: string };
+      if (b?.error) detail = b.error;
+    } catch {
+      /* non-JSON body — keep the status detail */
+    }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
-export function makeMockRecipe(id: string, grant: "full" | "partial"): Recipe {
+export function makeMockRecipe(
+  id: string,
+  grant: "full" | "partial",
+  opts: { failProvision?: boolean } = {},
+): Recipe {
   return {
     id,
     title: `Mock Provider (${grant})`,
@@ -75,6 +90,7 @@ export function makeMockRecipe(id: string, grant: "full" | "partial"): Recipe {
       const { resourceId } = (await post("/provision", {
         token,
         repoName: ctx.repoName,
+        fail: opts.failProvision, // failed-action variant → provider 429 → thrown + caught as `failed`
       })) as { resourceId: string };
       return { MOCK_API_KEY: token, MOCK_RESOURCE_ID: resourceId };
     },
@@ -85,3 +101,7 @@ export function makeMockRecipe(id: string, grant: "full" | "partial"): Recipe {
 export const mockRecipe = makeMockRecipe("mock", "full");
 /** Failure path — token under-scoped, caught at validate as wrong-scope. */
 export const mockBadScopeRecipe = makeMockRecipe("mock-badscope", "partial");
+/** Failure path — token is fine, but the provision API call rate-limits → `failed`. */
+export const mockFailProvisionRecipe = makeMockRecipe("mock-failprovision", "full", {
+  failProvision: true,
+});

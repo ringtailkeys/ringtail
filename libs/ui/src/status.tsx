@@ -13,7 +13,10 @@ export type CredentialStatus =
   | "validated"
   | "wrong-scope"
   | "provisioning"
-  | "synced";
+  | "synced"
+  // Layer 4: an action failed (rate-limit/conflict/API error) — a first-class,
+  // rendered recovery state, not a dead end. Kept in lockstep with @ringtail/core.
+  | "failed";
 
 interface StatusMeta {
   /** Deadpan mono label. */
@@ -36,6 +39,7 @@ export const STATUS: Record<CredentialStatus, StatusMeta> = {
   "wrong-scope": { label: "wrong scope", colorVar: "--danger", glyph: "✗", live: false },
   provisioning: { label: "provisioning", colorVar: "--berry", glyph: "◇", live: true },
   synced: { label: "in sync", colorVar: "--green", glyph: "✓", live: false, sacred: true },
+  failed: { label: "failed", colorVar: "--danger", glyph: "⚠", live: false },
 };
 
 /** Keyframes the live dot/chip pulse relies on — mount once (Storybook/preview or App). */

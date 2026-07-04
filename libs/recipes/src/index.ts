@@ -14,9 +14,14 @@ import { recipe as resend } from "./recipes/resend";
 import { recipe as posthog } from "./recipes/posthog";
 import { recipe as infisical } from "./recipes/infisical";
 import { recipe as creem } from "./recipes/creem";
-import { mockRecipe, mockBadScopeRecipe } from "./recipes/mock";
+import { mockRecipe, mockBadScopeRecipe, mockFailProvisionRecipe } from "./recipes/mock";
 
-export { makeMockRecipe, mockRecipe, mockBadScopeRecipe } from "./recipes/mock";
+export {
+  makeMockRecipe,
+  mockRecipe,
+  mockBadScopeRecipe,
+  mockFailProvisionRecipe,
+} from "./recipes/mock";
 
 /**
  * The real provider registry — what the dashboard's connection grid renders and
@@ -37,6 +42,7 @@ export const RECIPES: Record<string, Recipe> = {
 export const MOCK_RECIPES: Record<string, Recipe> = {
   [mockRecipe.id]: mockRecipe,
   [mockBadScopeRecipe.id]: mockBadScopeRecipe,
+  [mockFailProvisionRecipe.id]: mockFailProvisionRecipe,
 };
 
 /** Resolve a recipe by id across real + mock registries. */

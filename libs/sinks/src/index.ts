@@ -5,11 +5,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
  *   1. .env.local (local dev)      — upsertEnvLocal (line-preserving, idempotent)
  *   2. Infisical, per environment  — writeInfisical (real machine-identity shape)
  *
- * syncCredential fans one key out per the environment routing:
- *   dev              → .env.local + Infisical(dev)
- *   staging / prod   → Infisical only (never a local secret file for a remote env)
+ * syncCredential fans one key out per the environment routing (architecture.md
+ * §"The env axis"):
+ *   local            → .env.local ONLY   (the only env that touches your disk)
+ *   dev/staging/prod  → Infisical ONLY   (deployed — never a local secret file)
  */
-export type Environment = "dev" | "staging" | "prod";
+export type DeployedEnv = "dev" | "staging" | "prod";
+export type Environment = "local" | DeployedEnv;
 
 // KEY=… line, optionally a commented-out `# KEY=…`. Value ignored on read.
 const ENV_LINE = /^(#\s*)?([A-Za-z_][A-Za-z0-9_]*)=/;
@@ -101,7 +103,7 @@ async function infisicalPost(
  * version; confirm against the live Infisical API before pointing at prod.
  */
 export async function writeInfisical(
-  env: Environment,
+  env: DeployedEnv,
   values: Record<string, string>,
 ): Promise<void> {
   const clientId = process.env.INFISICAL_CLIENT_ID;
@@ -147,19 +149,20 @@ export async function writeInfisical(
 }
 
 /**
- * Fan one credential out per environment routing. dev writes the local .env.local
- * (and Infisical dev); staging/prod are remote-only (Infisical). Returns whether
- * the local file was touched, so callers can report where the key landed.
+ * Fan one credential out per environment routing (architecture.md §"The env axis"):
+ * `local` is the ONLY env that touches disk (.env.local); `dev/staging/prod` are
+ * deployed and go to Infisical ONLY — never a local secret file for a remote env.
+ * Returns whether the local file was touched, so callers can report where it landed.
  */
 export async function syncCredential(
   key: string,
   value: string,
   opts: { env: Environment; envLocalPath?: string },
 ): Promise<{ wroteLocal: boolean }> {
-  const wroteLocal = opts.env === "dev";
-  if (wroteLocal) {
+  if (opts.env === "local") {
     upsertEnvLocal(opts.envLocalPath ?? ".env.local", { [key]: value });
+    return { wroteLocal: true };
   }
   await writeInfisical(opts.env, { [key]: value });
-  return { wroteLocal };
+  return { wroteLocal: false };
 }

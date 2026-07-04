@@ -2,24 +2,158 @@ import type { Recipe, ValidateResult, ProvisionCtx } from "../recipe";
 
 const CF_BASE = "https://api.cloudflare.com/client/v4";
 
-const REQUIRED_SCOPES = [
-  "Account>Cloudflare Pages:Edit",
-  "Account>Workers Scripts:Edit",
-  "Account>Workers KV Storage:Edit",
-  "Account>Workers R2 Storage:Edit",
-  "Zone>DNS:Edit",
-  "Account>Account Settings:Read",
+/**
+ * The required scopes, as a SINGLE source of truth. Each entry carries:
+ *   - `label`  the human-readable scope (shown to the user, → `requiredScopes`)
+ *   - `key`    Cloudflare's permission-group KEY for the token-template deep-link
+ *   - `type`   the access level (`read` | `edit`)
+ *   - `probe`  a GET path that requires this permission group — validate-after-mint
+ *              hits it and reads the HTTP verdict (200 granted · 403 missing).
+ *
+ * Keys + template-URL format are the OFFICIAL Cloudflare "API token template URLs"
+ * (developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template).
+ * The keys: page · workers_scripts · workers_kv_storage · workers_r2 · dns ·
+ * account_settings. Verified current 2026-07.
+ */
+interface CfScope {
+  label: string;
+  key: string;
+  type: "read" | "edit";
+  /** GET path proving this scope; null → can't probe without an account id. */
+  probe: (accountId?: string) => string | null;
+}
+
+const CF_SCOPES: CfScope[] = [
+  {
+    label: "Account Settings: Read",
+    key: "account_settings",
+    type: "read",
+    probe: () => "/accounts?per_page=1",
+  },
+  {
+    label: "Cloudflare Pages: Edit",
+    key: "page",
+    type: "edit",
+    probe: (a) => (a ? `/accounts/${a}/pages/projects?per_page=1` : null),
+  },
+  {
+    label: "Workers Scripts: Edit",
+    key: "workers_scripts",
+    type: "edit",
+    probe: (a) => (a ? `/accounts/${a}/workers/scripts` : null),
+  },
+  {
+    label: "Workers KV Storage: Edit",
+    key: "workers_kv_storage",
+    type: "edit",
+    probe: (a) => (a ? `/accounts/${a}/storage/kv/namespaces?per_page=1` : null),
+  },
+  {
+    label: "Workers R2 Storage: Edit",
+    key: "workers_r2",
+    type: "edit",
+    probe: (a) => (a ? `/accounts/${a}/r2/buckets` : null),
+  },
+  { label: "DNS: Edit", key: "dns", type: "edit", probe: () => "/zones?per_page=1" },
 ];
+
+/**
+ * Build the pre-scoped token-creation deep-link (open-url step). Uses CF's official
+ * user-token template URL: `permissionGroupKeys` pre-selects every permission group,
+ * `accountId=*` + `zoneId=all` pre-scope the resources, `name` pre-fills the label.
+ * The user only clicks "Create" + copies the token — no scope hunting.
+ * Pure + deterministic → unit-tested.
+ */
+export function buildTokenCreateUrl(name = "ringtail"): string {
+  const permissionGroupKeys = CF_SCOPES.map((s) => ({ key: s.key, type: s.type }));
+  const params = new URLSearchParams({
+    permissionGroupKeys: JSON.stringify(permissionGroupKeys),
+    accountId: "*",
+    zoneId: "all",
+    name,
+  });
+  return `https://dash.cloudflare.com/profile/api-tokens?${params.toString()}`;
+}
+
+export interface VerifyOutcome {
+  active: boolean;
+  status?: string;
+  tokenId?: string;
+  detail: string;
+}
+
+/** Parse `GET /user/tokens/verify` (status ∈ active|disabled|expired). Pure → tested. */
+export function parseVerify(httpStatus: number, body: unknown): VerifyOutcome {
+  if (httpStatus === 0) {
+    return { active: false, detail: "network error — could not reach api.cloudflare.com" };
+  }
+  if (httpStatus === 401 || httpStatus === 403) {
+    return { active: false, detail: `${httpStatus} invalid or revoked token` };
+  }
+  const b = body as {
+    success?: boolean;
+    result?: { status?: string; id?: string };
+    errors?: Array<{ message?: string }>;
+  };
+  if (!b?.success) {
+    const msg =
+      (b?.errors ?? [])
+        .map((e) => e.message)
+        .filter(Boolean)
+        .join("; ") || `unexpected HTTP ${httpStatus}`;
+    return { active: false, detail: msg };
+  }
+  const status = b.result?.status;
+  if (status !== "active") {
+    return {
+      active: false,
+      status,
+      detail: `token status is '${status ?? "unknown"}' (expected 'active')`,
+    };
+  }
+  return { active: true, status, tokenId: b.result?.id, detail: "token active" };
+}
+
+export type ProbeVerdict = "granted" | "missing" | "unknown";
+
+/**
+ * Classify a scope-probe response. 200 = the token can reach the resource (scope
+ * granted); 403 (or CF authz code 9109 "Unauthorized to access requested resource")
+ * = the permission group is missing → the PRECISE wrong-scope signal; anything else
+ * (5xx, network) = inconclusive, don't false-flag a transient error as wrong-scope.
+ * Pure → tested with fixtures.
+ */
+export function classifyProbe(httpStatus: number, body: unknown): ProbeVerdict {
+  if (httpStatus === 200) return "granted";
+  if (httpStatus === 403) return "missing";
+  const b = body as { errors?: Array<{ code?: number }> };
+  if ((b?.errors ?? []).some((e) => e.code === 9109)) return "missing";
+  return "unknown";
+}
+
+/** Partition probe verdicts into granted/missing/unknown scope labels. Pure → tested. */
+export function summarizeScopes(probes: Array<{ label: string; verdict: ProbeVerdict }>): {
+  scopes: string[];
+  missing: string[];
+  unknown: string[];
+} {
+  const scopes: string[] = [];
+  const missing: string[] = [];
+  const unknown: string[] = [];
+  for (const p of probes) {
+    if (p.verdict === "granted") scopes.push(p.label);
+    else if (p.verdict === "missing") missing.push(p.label);
+    else unknown.push(p.label);
+  }
+  return { scopes, missing, unknown };
+}
 
 async function cfGet(
   path: string,
   token: string,
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   try {
-    // TODO(c7): current scopes/token-URL via Context7 at runtime
-    const res = await fetch(`${CF_BASE}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await fetch(`${CF_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
     const body = await res.json();
     return { ok: res.ok, status: res.status, body };
   } catch (err) {
@@ -32,81 +166,81 @@ export const recipe: Recipe = {
   title: "Cloudflare",
   mode: "guided",
   envVars: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
-  tokenCreateUrl: "https://dash.cloudflare.com/profile/api-tokens",
+  // Pre-scoped deep-link — the open-url step drops the user on a token page with
+  // every required permission group already ticked.
+  tokenCreateUrl: buildTokenCreateUrl(),
   docsUrl: "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
-  requiredScopes: REQUIRED_SCOPES,
-  // API token is root — reused across repos; ACCOUNT_ID is per-repo (derived at provision time)
+  requiredScopes: CF_SCOPES.map((s) => s.label),
+  // The API token is the ONLY root cred the user pastes; ACCOUNT_ID is derived from
+  // it at validate/provision time (GET /accounts) — no second copy-paste.
   rootCredKeys: ["CLOUDFLARE_API_TOKEN"],
 
+  /**
+   * Validate-AFTER-mint against REAL Cloudflare:
+   *  1. GET /user/tokens/verify → token is active (not disabled/expired/revoked).
+   *  2. GET /accounts           → resolve the account id + probe Account Settings:Read.
+   *  3. one scoped probe per required permission group → 403 = precisely-named gap.
+   * `ok` iff the token is active AND no probe came back missing.
+   */
   async validate(creds): Promise<ValidateResult> {
     const token = creds["CLOUDFLARE_API_TOKEN"];
-    if (!token) {
-      return { ok: false, detail: "CLOUDFLARE_API_TOKEN is missing" };
-    }
+    if (!token) return { ok: false, detail: "CLOUDFLARE_API_TOKEN is missing" };
 
-    // 1. Verify the token itself is active
     const verify = await cfGet("/user/tokens/verify", token);
-    if (!verify.ok) {
-      const status = verify.status;
-      const msg =
-        status === 401 || status === 403
-          ? `${status} invalid or revoked token`
-          : status === 0
-            ? "network error — could not reach api.cloudflare.com"
-            : `unexpected ${status}`;
-      return { ok: false, detail: msg };
-    }
+    const vo = parseVerify(verify.status, verify.body);
+    if (!vo.active) return { ok: false, detail: vo.detail };
 
-    const verifyData = verify.body as {
-      result?: { status?: string; id?: string };
-    };
-    if (verifyData?.result?.status !== "active") {
+    // Account Settings:Read probe doubles as account-id resolution.
+    const accountsRes = await cfGet("/accounts?per_page=50", token);
+    const accountsBody = accountsRes.body as { result?: Array<{ id: string; name: string }> };
+    const accountList = accountsBody?.result ?? [];
+    const suppliedId = creds["CLOUDFLARE_ACCOUNT_ID"];
+    const account = suppliedId ? accountList.find((a) => a.id === suppliedId) : accountList[0];
+    const accountId = account?.id ?? suppliedId;
+
+    if (suppliedId && accountsRes.status === 200 && !account) {
       return {
         ok: false,
-        detail: `token status is '${verifyData?.result?.status ?? "unknown"}' (expected 'active')`,
-      };
-    }
-
-    // 2. Confirm account access + capture account id
-    const accounts = await cfGet("/accounts?per_page=50", token);
-    if (!accounts.ok) {
-      return {
-        ok: false,
-        detail: `token is active but cannot list accounts (${accounts.status}) — check Account Settings:Read scope`,
-      };
-    }
-
-    const accountsData = accounts.body as {
-      result?: Array<{ id: string; name: string }>;
-    };
-    const accountList = accountsData?.result ?? [];
-
-    const suppliedAccountId = creds["CLOUDFLARE_ACCOUNT_ID"];
-    const matchedAccount = suppliedAccountId
-      ? accountList.find((a) => a.id === suppliedAccountId)
-      : accountList[0];
-
-    if (suppliedAccountId && !matchedAccount) {
-      return {
-        ok: false,
-        detail: `CLOUDFLARE_ACCOUNT_ID '${suppliedAccountId}' not found in accessible accounts`,
+        detail: `CLOUDFLARE_ACCOUNT_ID '${suppliedId}' not found in accessible accounts`,
         scopes: [],
         missing: [],
       };
     }
 
-    const accountSummary = matchedAccount
-      ? `account '${matchedAccount.name}' (${matchedAccount.id})`
-      : `${accountList.length} account(s) accessible`;
+    const probes: Array<{ label: string; verdict: ProbeVerdict }> = [];
+    for (const s of CF_SCOPES) {
+      if (s.key === "account_settings") {
+        probes.push({
+          label: s.label,
+          verdict: classifyProbe(accountsRes.status, accountsRes.body),
+        });
+        continue;
+      }
+      const path = s.probe(accountId);
+      if (!path) {
+        probes.push({ label: s.label, verdict: "unknown" });
+        continue;
+      }
+      const r = await cfGet(path, token);
+      probes.push({ label: s.label, verdict: classifyProbe(r.status, r.body) });
+    }
 
-    // ponytail: CF /user/tokens/{id} returns permission-group UUIDs, not human
-    //   labels — mapping those would need a secondary lookup. Honest degradation:
-    //   we confirm the token is active and the account is reachable.
+    // ponytail: a GET probe confirms the resource is REACHABLE (Edit groups include
+    //   Read), so a Read-only token to the same resource reads as granted. The gap it
+    //   catches precisely is NO access (403) — the wrong-scope case that matters.
+    //   Upgrade path: a dry-run write per scope when a false "Read passes for Edit" bites.
+    const { scopes, missing, unknown } = summarizeScopes(probes);
+    const acctSummary = account
+      ? `account '${account.name}' (${account.id})`
+      : `${accountList.length} account(s) accessible`;
+    const ok = missing.length === 0;
     return {
-      ok: true,
-      detail: `authenticated — token active, ${accountSummary}`,
-      scopes: ["token:active", "accounts:readable"],
-      missing: [],
+      ok,
+      detail: ok
+        ? `authenticated — token active, ${acctSummary}${unknown.length ? ` · unverified: ${unknown.join(", ")}` : ""}`
+        : `token active but missing scope(s): ${missing.join(", ")}`,
+      scopes,
+      missing,
     };
   },
 
@@ -143,7 +277,6 @@ export const recipe: Recipe = {
 
     let res: { ok: boolean; status: number; body: unknown };
     try {
-      // TODO(c7): current scopes/token-URL via Context7 at runtime
       const raw = await fetch(`${CF_BASE}/accounts/${accountId}/pages/projects`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

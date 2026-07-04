@@ -1,10 +1,20 @@
 import type { DaemonSnapshot } from "@ringtail/core";
-import { Badge, allKeyframes, cssVars, font, moonlit, radius } from "@ringtail/ui";
+import {
+  ActionsPanel,
+  Badge,
+  ChatPanel,
+  allKeyframes,
+  cssVars,
+  font,
+  moonlit,
+  radius,
+} from "@ringtail/ui";
 import { useEffect, useState } from "react";
 import roccoChill from "../../.brand-assets/rocco-chill.png";
+import { AgentPicker } from "./cockpit/AgentPicker";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { WizardModal } from "./cockpit/WizardModal";
-import { fixtureSnapshot, subscribeLive } from "./live";
+import { approveAction, fixtureSnapshot, sendChat, submitStep, subscribeLive } from "./live";
 
 /**
  * The LOCAL cockpit — now wired LIVE. It subscribes to the daemon's SSE state
@@ -46,12 +56,33 @@ export function App() {
             <Badge>MIT</Badge>
             <Badge tone="berry">local-first</Badge>
             <Badge tone="amber">no telemetry</Badge>
-            <Badge tone="berry">🔒 agent never sees your secrets</Badge>
           </div>
+          {live && <AgentPicker />}
           <LiveGrid grid={snapshot.grid} />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+              gap: 24,
+              marginTop: 28,
+              alignItems: "start",
+            }}
+          >
+            <ActionsPanel
+              actions={snapshot.actions}
+              onApprove={live ? (id, confirmed) => void approveAction(id, confirmed) : undefined}
+            />
+            <ChatPanel
+              messages={snapshot.chat}
+              onSend={live ? sendChat : undefined}
+              disabled={!live}
+            />
+          </div>
         </div>
       </div>
-      {snapshot.wizard && <WizardModal wizard={snapshot.wizard} />}
+      {snapshot.wizard && (
+        <WizardModal wizard={snapshot.wizard} onSubmit={live ? submitStep : undefined} />
+      )}
     </>
   );
 }
@@ -90,8 +121,34 @@ function Header({ live }: { live: boolean }) {
           your keys, raided · washed · stashed
         </p>
       </div>
-      <StatusPill live={live} />
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+        <StatusPill live={live} />
+        <TrustIndicator />
+      </div>
     </header>
+  );
+}
+
+// Persistent, always-on (independent of daemon state): the guarantee never disappears,
+// with Rocco's line as the tasteful undertone. This is the header trust anchor.
+function TrustIndicator() {
+  return (
+    <span
+      title='"your keys. my paws only." — Rocco'
+      style={{
+        fontFamily: font.mono,
+        fontSize: 12,
+        letterSpacing: "0.04em",
+        padding: "6px 12px",
+        borderRadius: radius.pill,
+        border: "1px solid color-mix(in srgb, var(--green) 40%, var(--line))",
+        background: "color-mix(in srgb, var(--green) 10%, transparent)",
+        color: "var(--green)",
+        whiteSpace: "nowrap",
+      }}
+    >
+      🔒 agent never sees your secrets
+    </span>
   );
 }
 

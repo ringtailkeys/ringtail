@@ -15,6 +15,77 @@ const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? "http://localhost:4880";
 
 export const GRID_ENVS: GridEnv[] = ["local", "dev", "staging", "prod"];
 
+// Cached session token — set when subscribeLive fetches it, reused by the POST
+// paths (submitStep, fetchAgents) so we don't re-fetch per call. Loopback only.
+let sessionToken: string | null = null;
+
+async function ensureToken(): Promise<string> {
+  if (sessionToken) return sessionToken;
+  const r = await fetch(`${DAEMON_URL}/api/session`);
+  sessionToken = ((await r.json()) as { token: string }).token;
+  return sessionToken;
+}
+
+/** The BROWSER paste path: POST the value user → daemon (never through the agent).
+ * Returns the value-free result ({ stepId, varName?, status }); throws on failure. */
+export async function submitStep(stepId: string, value?: string): Promise<{ status: string }> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/step`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ stepId, value }),
+  });
+  if (!res.ok) throw new Error(`submitStep failed: ${res.status}`);
+  return (await res.json()) as { status: string };
+}
+
+/** The user → agent direction channel: POST the chat text to the daemon, which
+ * appends it to the transcript (renders at once over SSE) and queues it for the
+ * agent to drain (pollChat). Intent text only — never a secret value. */
+export async function sendChat(text: string): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`sendChat failed: ${res.status}`);
+}
+
+/** The BROWSER approve path for a mapped action: POST id (+ confirmed for a
+ * destructive one that cleared the two-step gate) → daemon runs it with the stored
+ * creds. Returns the value-free run result; throws on transport failure. */
+export async function approveAction(id: string, confirmed?: boolean): Promise<unknown> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id, confirmed }),
+  });
+  if (!res.ok) throw new Error(`approveAction failed: ${res.status}`);
+  return res.json();
+}
+
+export interface DetectedAgent {
+  id: string;
+  name: string;
+  present: boolean;
+  connect: string;
+}
+
+/** Detected agent CLIs on PATH + their connect commands (empty if daemon is down). */
+export async function fetchAgents(): Promise<DetectedAgent[]> {
+  try {
+    const token = await ensureToken();
+    const res = await fetch(`${DAEMON_URL}/api/agents`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return ((await res.json()) as { agents: DetectedAgent[] }).agents;
+  } catch {
+    return [];
+  }
+}
+
 /** Subscribe to live daemon state. Returns an unsubscribe fn. Calls onDown once if
  * the daemon can't be reached (session fetch or SSE fails) → render fixtures. */
 export function subscribeLive(
@@ -28,6 +99,7 @@ export function subscribeLive(
     .then((r) => r.json() as Promise<{ token: string }>)
     .then(({ token }) => {
       if (cancelled) return;
+      sessionToken = token;
       es = new EventSource(`${DAEMON_URL}/events?token=${encodeURIComponent(token)}`);
       es.onmessage = (e) => {
         try {
@@ -58,5 +130,5 @@ export function fixtureSnapshot(): DaemonSnapshot {
       prod: p.envs.prod,
     },
   }));
-  return { grid, wizard: null, actions: [] };
+  return { grid, wizard: null, actions: [], chat: [] };
 }

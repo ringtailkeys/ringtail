@@ -1,10 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { getEnv } from "@ringtail/config";
-import { connectionMap, defaultEnvironment, provisionCredential } from "@ringtail/core";
+import {
+  connectionMap,
+  defaultEnvironment,
+  provisionCredential,
+  reuseKnownCredentials,
+} from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
+import { runAction } from "./action";
+import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
 import { DaemonStore } from "./state";
+import { applyStep } from "./submit";
 
 /**
  * @ringtail/daemon — the LOCAL machine surface AND the MCP server, in ONE process
@@ -27,6 +35,11 @@ export interface DaemonOpts {
   envLocalPath?: string;
   /** Override the minted session token (tests/driver). */
   token?: string;
+  /** Run local credential discovery at boot (architecture.md §"Local credential
+   * discovery"): scan known stores, reuse a complete root grant, seed the grid as
+   * already-connected. Off by default so the in-process tests stay deterministic;
+   * `ringtail up` turns it on. */
+  discover?: boolean;
 }
 
 export interface Daemon {
@@ -40,6 +53,18 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   const token = opts.token ?? randomBytes(24).toString("hex");
   const store = new DaemonStore();
   const app = new Hono();
+
+  // Local credential discovery (transparent): reuse a root grant we already hold so
+  // the grid shows already-connected instead of missing. Names + provenance logged;
+  // no value is ever printed or leaves the daemon.
+  if (opts.discover) {
+    for (const r of reuseKnownCredentials({ envLocalPath: opts.envLocalPath })) {
+      store.markDiscovered([r.provider]);
+      console.log(
+        `[discover] ${r.provider}: reused ${r.reused.map((x) => `${x.key} (${x.source})`).join(", ")}`,
+      );
+    }
+  }
 
   // CORS for the local dashboard (loopback dev, standalone Vite on another port).
   // ponytail: `*` is safe here — the daemon binds 127.0.0.1 only and the token
@@ -88,6 +113,64 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // served HTML instead of exposing this endpoint.
   app.get("/api/session", (c) => c.json({ token }));
 
+  // POST /api/step — the BROWSER paste path (architecture.md §"Step kinds · paste").
+  // The value flows user → daemon → validate → @ringtail/store, NEVER through the
+  // agent. Shares applyStep with the MCP submitStep tool; the response is status +
+  // var NAME only (no value → check:no-leak stays green). Token-gated like /mcp.
+  app.post("/api/step", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { stepId?: string; value?: string };
+    if (!body.stepId) return c.json({ error: "stepId required" }, 400);
+    try {
+      return c.json(applyStep(store, body.stepId, body.value));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // POST /api/chat — the USER → agent direction channel. The user types in the
+  // dashboard; the message is appended to the transcript (renders at once over SSE)
+  // AND queued for the agent to drain via the pollChat MCP tool. Intent TEXT only —
+  // never a secret value (paste has its own path, POST /api/step). Token-gated.
+  app.post("/api/chat", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { text?: string };
+    const text = body.text?.trim();
+    if (!text) return c.json({ error: "text required" }, 400);
+    store.postUserMessage(text);
+    return c.json({ ok: true });
+  });
+
+  // POST /api/action — the BROWSER approve path for a mapped action (the "Next steps"
+  // panel). Shares runAction with the MCP executeAction tool, so the SAME gates apply:
+  // prerequisites, and the hard-confirm for `destructive` (the panel sends
+  // confirmed:true only after the user clears the two-step destructive gate). The
+  // daemon executes with the stored creds and returns status/names, never values.
+  app.post("/api/action", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { id?: string; confirmed?: boolean };
+    if (!body.id) return c.json({ error: "id required" }, 400);
+    try {
+      const result = await runAction(store, body.id, {
+        repoName: opts.repoName ?? "ringtail",
+        envLocalPath: opts.envLocalPath,
+        confirmed: body.confirmed,
+      });
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // GET /api/agents — detected coding-agent CLIs on PATH + the exact MCP-connect
+  // command per agent (URL from THIS request's origin + the session token). The
+  // dashboard renders the picker (architecture.md §"Entry & agent selection").
+  app.get("/api/agents", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
+    return c.json({ agents: detectAgents(mcpUrl, token) });
+  });
+
   // ── MCP over Streamable HTTP (Web-Standard transport) ──────────────────────
   // Stateless JSON mode: our live state lives in the shared DaemonStore, not an MCP
   // session — so we mint a fresh server+transport per request (the transport is
@@ -135,7 +218,10 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
 // ── real entry: `ringtail up` boots the daemon on 127.0.0.1 and prints the token ─
 if (import.meta.main) {
   const port = Number(process.env.PORT) || getEnv().DAEMON_PORT;
-  const { app, token } = createDaemon({ envLocalPath: process.env.RINGTAIL_ENV_LOCAL });
+  const { app, token } = createDaemon({
+    envLocalPath: process.env.RINGTAIL_ENV_LOCAL,
+    discover: true,
+  });
   const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
   const dashPort = getEnv().DASHBOARD_PORT;
   // The boot line — MCP URL + session token + dashboard. Bind is 127.0.0.1 only.
