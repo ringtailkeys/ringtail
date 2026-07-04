@@ -9,9 +9,11 @@ import { MIXED } from "./cockpit/fixtures";
  * fall back to fixtures so the cockpit (and Storybook) still renders.
  */
 
-// Standalone Vite dev points at the daemon's port; when the daemon serves the
-// dashboard it's same-origin ("").
-const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? "http://localhost:4880";
+// When the daemon serves the built dashboard (`ringtail up`), it's same-origin, so
+// default to "" → relative fetches (`/api/session`, `/events`, `/api/*`) hit the
+// daemon that served this page. Standalone Vite dev (Tilt) injects VITE_DAEMON_URL
+// to point cross-origin at the daemon's own port.
+const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? "";
 
 export const GRID_ENVS: GridEnv[] = ["local", "dev", "staging", "prod"];
 
