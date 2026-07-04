@@ -30,5 +30,12 @@ screen ships a **Storybook demo** — its presentational view lifted into `libs/
 `mock-*` state, reviewable with **no daemon, keys, or network** (keeps ZERO-TELEMETRY honest).
 Full rule in [`CLAUDE.md`](./CLAUDE.md).
 
+## 4. Docs are part of done — enforced
+
+If you change the public surface — CLI commands, MCP tools, the `Wizard`/`Step`/`Action`
+contract, the `.env.example` manifest, or the onboarding flow — you MUST update `README.md`
+and `apps/docs` in the SAME change. Docs live with the code; stale docs are a bug. CI enforces
+it via `check:docs`. Full rule in [`CLAUDE.md`](./CLAUDE.md).
+
 bun only. Dev via `./tilt_up.sh` (never `tilt up`). Verify with `bun run check`.
 Canonical domain: **ringtailkeys.com**.

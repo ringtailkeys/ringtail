@@ -61,6 +61,14 @@ All UI lives in the design system, reviewable in isolation before it's wired:
 `tsconfig.base.json` `paths` must start with `./` — a bare path throws **TS5090**.
 `lefthook` blocks the commit/push if format, lint, or typecheck fails. Run `bun run check`.
 
+## Docs are part of done — enforced
+
+If you change the public surface — CLI commands, MCP tools, the `Wizard`/`Step`/`Action`
+contract, the `.env.example` manifest, or the onboarding flow — you MUST update `README.md`
+and `apps/docs` in the SAME change. Docs live with the code; stale docs are a bug. CI enforces
+it via `check:docs` (a `docs-sync` test derives the surface from the code and fails naming any
+undocumented item, then `apps/docs` builds for broken-link/MDX safety).
+
 ## Package manager & dev
 
 - **bun** only (never npm). `bun install` at root.
