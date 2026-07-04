@@ -20,7 +20,9 @@ import type { DaemonStore } from "./state";
  *   3. dispatch — a known typed executor (domain→CF), else the provisioning loop.
  */
 
-const DEPLOYED_ENVS: Environment[] = ["dev", "staging", "prod"];
+// The full env axis: `local` writes .env.local, dev/staging/prod go to Infisical
+// (routing lives in @ringtail/sinks). Each env is its own grid cell.
+const PROVISION_ENVS: Environment[] = ["local", "dev", "staging", "prod"];
 /** A provider counts as "connected" once any env cell reached these states. */
 const CONNECTED: CredentialStatus[] = ["validated", "synced"];
 
@@ -37,8 +39,9 @@ export interface EngineOpts {
 }
 
 /**
- * Drive the mock engine across the deployed envs; flip grid cells as it goes.
- * dev's .env.local write also backs the `local` column (local → .env.local).
+ * Drive the mock engine across the full env axis (local · dev · staging · prod);
+ * flip grid cells as it goes. `local` syncs to .env.local, the rest to Infisical
+ * (per @ringtail/sinks routing) — each is its own cell, set from its own report.
  * Short-circuits on the first wrong-scope/failed env → a typed failure the agent
  * re-plans from (Layer 4). RINGTAIL_MOCK_RECIPE picks which fake recipe this run
  * exercises (mock · mock-badscope · mock-failprovision) — the offline recovery seam.
@@ -53,7 +56,7 @@ export async function runEngine(
 }> {
   const recipeId = process.env.RINGTAIL_MOCK_RECIPE ?? "mock";
   const results: Array<{ env: string; status: string; keys: string[] }> = [];
-  for (const env of DEPLOYED_ENVS) {
+  for (const env of PROVISION_ENVS) {
     store.setCell(provider, env, "provisioning");
     const report = await provisionCredential(recipeId, {
       env,
@@ -61,7 +64,6 @@ export async function runEngine(
       envLocalPath: opts.envLocalPath,
     });
     store.setCell(provider, env, report.status);
-    if (report.wroteLocal) store.setCell(provider, "local", report.status);
     results.push({ env, status: report.status, keys: report.keys }); // NAMES only
     if (report.status === "wrong-scope" || report.status === "failed") {
       return {

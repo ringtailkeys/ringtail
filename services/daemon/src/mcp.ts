@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ActionSchema, GRID_ENVS, WizardSchema } from "@ringtail/core";
+import { ActionSchema, authorWizard, GRID_ENVS, WizardSchema } from "@ringtail/core";
 import { z } from "zod";
 import { runAction, runEngine } from "./action";
 import { applyStep } from "./submit";
@@ -74,6 +74,29 @@ export function buildMcpServer(
       inputSchema: { wizard: WizardSchema },
     },
     async ({ wizard }) => {
+      store.setWizard(wizard);
+      return ok({
+        wizardId: wizard.id,
+        provider: wizard.provider,
+        steps: wizard.steps.map((s) => ({ id: s.id, kind: s.kind, status: s.status })),
+      });
+    },
+  );
+
+  // authorWizard(provider) → the RECIPE FAST-PATH. The agent names a curated provider
+  // and the daemon derives the on-brand 1-2-3 setup wizard from that recipe's metadata
+  // (open-url → paste → provision), pushes it to the cockpit, and returns names/kinds
+  // only. This is the deterministic counterpart to an agent-authored (renderWizard)
+  // wizard for the long tail — together with plan() it covers the whole manifest.
+  server.registerTool(
+    "authorWizard",
+    {
+      description:
+        "Author the curated recipe's setup wizard for a provider (open-url → paste → provision) and push it to the cockpit. Returns step names + kinds, never values.",
+      inputSchema: { provider: z.string().min(1) },
+    },
+    async ({ provider }) => {
+      const wizard = authorWizard(provider);
       store.setWizard(wizard);
       return ok({
         wizardId: wizard.id,

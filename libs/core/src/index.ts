@@ -2,8 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { getEnv } from "@ringtail/config";
 import { getRecipe, RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
 import { syncCredential, type Environment } from "@ringtail/sinks";
-import { putCredential, readStore, resolveRootCreds } from "@ringtail/store";
-import { GRID_ENVS, type GridEnv, type GridRow } from "./wizard";
+import { discoverCredentials, putCredential, readStore, resolveRootCreds } from "@ringtail/store";
+import {
+  GRID_ENVS,
+  WizardSchema,
+  type GridEnv,
+  type GridRow,
+  type Step,
+  type Wizard,
+} from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
 
@@ -52,7 +59,10 @@ export function defaultEnvironment(): Environment {
   return getEnv().INFISICAL_ENVIRONMENT;
 }
 
-const ENVIRONMENTS: Environment[] = ["dev", "staging", "prod"];
+// The full env axis (architecture.md §"The env axis"): local (disk/.env.local) +
+// the three deployed envs (Infisical). connectionMap / planByEnv / the grid all
+// project across these four — single source of truth for "how many columns".
+const ENVIRONMENTS: Environment[] = ["local", "dev", "staging", "prod"];
 
 // ── connection grid (dashboard /api/status) ──────────────────────────────────
 
@@ -112,6 +122,123 @@ export function gridSeed(): GridRow[] {
       CredentialStatus
     >,
   }));
+}
+
+// ── local credential discovery (reuse before you ask) ────────────────────────
+
+/** One provider whose root grant we already hold — names + provenance, NEVER a value. */
+export interface ReusedProvider {
+  provider: string;
+  /** The root-cred NAMES reused + where each came from (transparency). No values. */
+  reused: { key: string; source: string }[];
+}
+
+/**
+ * Local credential discovery, tied to the recipe registry (architecture.md §"Local
+ * credential discovery" + §"1 Get the root keys"). For every recipe that has ROOT
+ * creds, scan the KNOWN stores; if we already hold ALL of a recipe's root keys,
+ * copy them into ~/.ringtail (so every downstream run + repo reuses them) and report
+ * the provider as already-connected. A partial grant is NOT reused (a half-connected
+ * provider must still be completed by the human).
+ *
+ * Returns NAMES + provenance only — values never leave the store. Generate-only
+ * recipes (no root cred to find, e.g. better-auth) are skipped: they mint locally.
+ * Idempotent: a key already stored at the same value is left untouched.
+ */
+export function reuseKnownCredentials(opts: { envLocalPath?: string } = {}): ReusedProvider[] {
+  const store = readStore();
+  const out: ReusedProvider[] = [];
+  for (const recipe of Object.values(RECIPES)) {
+    const rootKeys = recipe.rootCredKeys ?? [];
+    if (rootKeys.length === 0) continue; // generate-only / nothing to discover
+    const hits = discoverCredentials(rootKeys, { envLocalPath: opts.envLocalPath });
+    if (hits.length !== rootKeys.length) continue; // only reuse a COMPLETE root grant
+    for (const h of hits) {
+      if (store.credentials[h.key]?.value !== h.value) {
+        putCredential(h.key, {
+          value: h.value,
+          provider: recipe.id,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+    out.push({ provider: recipe.id, reused: hits.map((h) => ({ key: h.key, source: h.source })) });
+  }
+  return out;
+}
+
+// ── authorWizard (recipe → the universal 1-2-3 setup wizard) ─────────────────
+
+/**
+ * Turn a curated Recipe into the universal setup Wizard (architecture.md §"The
+ * unified contract" + §"Recipes vs agent-authored wizards"). This is the RECIPE
+ * FAST-PATH: deterministic, on-brand-by-construction steps derived from the recipe's
+ * OWN metadata, so `plan` + authorWizard cover the whole manifest with zero
+ * hand-written per-provider wizards. Shape by mode:
+ *   - generate → one `auto` step (mint the secret locally, no human, no paste).
+ *   - guided / auto → `open-url` (pre-scoped token page, if any) → one `paste` per
+ *     root cred (🔒 value flows user → Ringtail) → `auto` (provision + sync the axis).
+ * NEVER carries a value — paste steps carry the var NAME only. Schema-validated
+ * (WizardSchema) before it returns, same as any agent-supplied wizard.
+ */
+export function authorWizard(recipeId: string): Wizard {
+  const recipe = getRecipe(recipeId);
+  if (!recipe) throw new Error(`unknown recipe: ${recipeId}`);
+  const steps: Step[] = [];
+
+  if (recipe.mode === "generate") {
+    steps.push({
+      id: `${recipe.id}-generate`,
+      title: `Generate ${recipe.envVars.join(", ")}`,
+      description: `Ringtail mints a strong ${recipe.title} secret locally — no account, no paste.`,
+      kind: "auto",
+      danger: "safe",
+      status: "pending",
+    });
+  } else {
+    if (recipe.tokenCreateUrl) {
+      steps.push({
+        id: `${recipe.id}-open`,
+        title: `Open the ${recipe.title} token page`,
+        description: recipe.requiredScopes?.length
+          ? `Create a token with: ${recipe.requiredScopes.join(", ")}.`
+          : `Create an API key for ${recipe.title}.`,
+        kind: "open-url",
+        payload: { url: recipe.tokenCreateUrl, scopes: recipe.requiredScopes },
+        status: "pending",
+      });
+    }
+    // paste = the root grant only. ponytail: derived/downstream env vars (DATABASE_URL,
+    //   NEXT_PUBLIC_*) come from provision, not a second paste; a recipe that truly needs
+    //   an extra pasted secret (e.g. a webhook signing secret) gets an agent-authored
+    //   wizard — the universal fallback — rather than bloating this generic author.
+    const pasteKeys = recipe.rootCredKeys?.length ? recipe.rootCredKeys : recipe.envVars;
+    for (const varName of pasteKeys) {
+      steps.push({
+        id: `${recipe.id}-paste-${varName}`,
+        title: `Paste your ${varName}`,
+        description: "🔒 goes to Ringtail, not the agent.",
+        kind: "paste",
+        payload: { varName },
+        status: "pending",
+      });
+    }
+    steps.push({
+      id: `${recipe.id}-provision`,
+      title: "Provision local · dev · staging · prod",
+      description: "Mint → validate-after-mint → provision → sync.",
+      kind: "auto",
+      danger: "safe",
+      status: "pending",
+    });
+  }
+
+  return WizardSchema.parse({
+    id: `wiz-${recipe.id}`,
+    title: `Connect ${recipe.title}`,
+    provider: recipe.id,
+    steps,
+  });
 }
 
 // ── the plan (read .env.example → gap per env) ───────────────────────────────

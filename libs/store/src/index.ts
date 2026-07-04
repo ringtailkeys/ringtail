@@ -15,6 +15,9 @@ import { join } from "node:path";
  * test seam that lets the e2e point the store at a throwaway temp dir. Paths are
  * computed per-call (not module constants) so the override applies at call time.
  */
+// Local credential discovery — scan KNOWN stores, map to manifest vars, reuse.
+export { discoverCredentials, type DiscoveredCred } from "./discover";
+
 export interface Credential {
   value: string;
   provider: string;

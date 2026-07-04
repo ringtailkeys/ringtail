@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { readPlan, provisionCredential, type Environment } from "./index";
 import { startMockProvider, type MockProvider } from "./mock-provider";
 
-const ENVS: Environment[] = ["dev", "staging", "prod"];
+const ENVS: Environment[] = ["local", "dev", "staging", "prod"];
 
 // A fixture manifest — the "shopping list" the scan reads.
 const FIXTURE_ENV_EXAMPLE = ["# ── Mock Provider ──", "MOCK_API_KEY=", "MOCK_RESOURCE_ID="].join(
@@ -117,8 +117,8 @@ async function runGoodPath(): Promise<{ envLocal: string; statuses: string[] }> 
       "provisioning",
       "synced",
     ]);
-    // dev writes the local file; staging/prod are Infisical-only.
-    expect(report.wroteLocal).toBe(env === "dev");
+    // local writes the .env.local file; dev/staging/prod are Infisical-only.
+    expect(report.wroteLocal).toBe(env === "local");
   }
   return { envLocal: readFileSync(envLocalPath, "utf8"), statuses };
 }
@@ -131,10 +131,11 @@ test("full loop: provision + sync across dev/staging/prod, real .env.local, Infi
   expect(first.envLocal).toContain("MOCK_API_KEY=mock-token-full");
   expect(first.envLocal).toContain("MOCK_RESOURCE_ID=mock-res-ringtail");
 
-  // Final status synced across all three environments.
-  expect(first.statuses).toEqual(["synced", "synced", "synced"]);
+  // Final status synced across all four environments (local + the three deployed).
+  expect(first.statuses).toEqual(["synced", "synced", "synced", "synced"]);
 
-  // Infisical sink called for EVERY environment.
+  // Infisical sink called for every DEPLOYED environment — `local` never hits it
+  // (local → .env.local only, per the env-axis routing).
   const envsHit = new Set(mock.calls.infisical.map((c) => c.env));
   expect([...envsHit].sort()).toEqual(["dev", "prod", "staging"]);
 
@@ -147,5 +148,5 @@ test("idempotent: a second identical run produces a byte-identical .env.local", 
   const first = readFileSync(envLocalPath, "utf8");
   const second = await runGoodPath();
   expect(second.envLocal).toBe(first); // no drift, no duplicate lines
-  expect(second.statuses).toEqual(["synced", "synced", "synced"]);
+  expect(second.statuses).toEqual(["synced", "synced", "synced", "synced"]);
 });

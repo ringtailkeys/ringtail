@@ -62,6 +62,19 @@ export class DaemonStore {
     this.#emit();
   }
 
+  /** Seed the grid from local discovery: a provider whose root grant we already
+   * hold shows `validated` (already-connected) across every env instead of `missing`
+   * — the human paste step is skippable. Names only; the real validate-after-mint
+   * still runs at provision, so a stale discovered key is caught there. */
+  markDiscovered(providers: string[]): void {
+    for (const p of providers) {
+      const row = this.#grid.find((r) => r.provider === p);
+      if (!row) continue;
+      for (const e of Object.keys(row.envs) as GridEnv[]) row.envs[e] = "validated";
+    }
+    this.#emit();
+  }
+
   /** Push a validated wizard to the cockpit (renderWizard). */
   setWizard(wizard: Wizard | null): void {
     this.#wizard = wizard;

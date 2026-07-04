@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { getEnv } from "@ringtail/config";
-import { connectionMap, defaultEnvironment, provisionCredential } from "@ringtail/core";
+import {
+  connectionMap,
+  defaultEnvironment,
+  provisionCredential,
+  reuseKnownCredentials,
+} from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
 import { runAction } from "./action";
@@ -30,6 +35,11 @@ export interface DaemonOpts {
   envLocalPath?: string;
   /** Override the minted session token (tests/driver). */
   token?: string;
+  /** Run local credential discovery at boot (architecture.md §"Local credential
+   * discovery"): scan known stores, reuse a complete root grant, seed the grid as
+   * already-connected. Off by default so the in-process tests stay deterministic;
+   * `ringtail up` turns it on. */
+  discover?: boolean;
 }
 
 export interface Daemon {
@@ -43,6 +53,18 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   const token = opts.token ?? randomBytes(24).toString("hex");
   const store = new DaemonStore();
   const app = new Hono();
+
+  // Local credential discovery (transparent): reuse a root grant we already hold so
+  // the grid shows already-connected instead of missing. Names + provenance logged;
+  // no value is ever printed or leaves the daemon.
+  if (opts.discover) {
+    for (const r of reuseKnownCredentials({ envLocalPath: opts.envLocalPath })) {
+      store.markDiscovered([r.provider]);
+      console.log(
+        `[discover] ${r.provider}: reused ${r.reused.map((x) => `${x.key} (${x.source})`).join(", ")}`,
+      );
+    }
+  }
 
   // CORS for the local dashboard (loopback dev, standalone Vite on another port).
   // ponytail: `*` is safe here — the daemon binds 127.0.0.1 only and the token
@@ -196,7 +218,10 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
 // ── real entry: `ringtail up` boots the daemon on 127.0.0.1 and prints the token ─
 if (import.meta.main) {
   const port = Number(process.env.PORT) || getEnv().DAEMON_PORT;
-  const { app, token } = createDaemon({ envLocalPath: process.env.RINGTAIL_ENV_LOCAL });
+  const { app, token } = createDaemon({
+    envLocalPath: process.env.RINGTAIL_ENV_LOCAL,
+    discover: true,
+  });
   const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
   const dashPort = getEnv().DASHBOARD_PORT;
   // The boot line — MCP URL + session token + dashboard. Bind is 127.0.0.1 only.
