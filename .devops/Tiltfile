@@ -26,6 +26,13 @@ BUN = os.environ['HOME'] + '/.bun/bin/bun'
 update_settings(max_parallel_updates=4)
 docker_prune_settings(disable=True)
 
+# ringtail has NO k8s — only local_resource (portless + bun). But Tilt guards
+# local() against a "production-looking" kube context, and the default context
+# here (orbstack) trips it. Whitelist it so local() runs. Lives HERE (not the
+# root Tiltfile) so both ./tilt_up.sh AND the site umbrella (which include()s
+# this file directly) get it.
+allow_k8s_contexts('orbstack')
+
 # This Tiltfile lives in .devops/, loaded via load_dynamic from the root Tiltfile,
 # so cwd is .devops/ — the repo root is one up.
 REPO_ROOT = str(local('cd .. && pwd', quiet=True)).strip()
