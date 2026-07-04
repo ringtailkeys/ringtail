@@ -1,3 +1,4 @@
+/// <reference types="bun-types" />
 /**
  * A self-contained fake provider + fake Infisical, over real HTTP. This is what
  * makes the e2e REAL (actual fetch/JSON round-trips) and REPEATABLE (no cloud

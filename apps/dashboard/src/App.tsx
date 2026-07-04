@@ -1,73 +1,36 @@
-import type { ConnStatus, ProviderStatus } from "@ringtail/core";
-import { cssVars, font, moonlit, radius } from "@ringtail/ui";
+import type { DaemonSnapshot } from "@ringtail/core";
+import { Badge, allKeyframes, cssVars, font, moonlit, radius } from "@ringtail/ui";
 import { useEffect, useState } from "react";
 import roccoChill from "../../.brand-assets/rocco-chill.png";
+import { LiveGrid } from "./cockpit/LiveGrid";
+import { WizardModal } from "./cockpit/WizardModal";
+import { fixtureSnapshot, subscribeLive } from "./live";
 
 /**
- * The LOCAL cockpit. Reads the daemon's /api/status and renders the providers ×
- * {dev,staging,prod} connection grid. Brand tokens come from @ringtail/ui — no
- * raw hex here (see docs/brand/design-lock.md). ZERO TELEMETRY: this app makes
- * exactly one network call, to the local daemon. Nothing phones home.
+ * The LOCAL cockpit — now wired LIVE. It subscribes to the daemon's SSE state
+ * stream (grid + current wizard, ONE source of truth) and re-renders on every push
+ * as the agent drives over MCP: cells flip green, wizard steps check off. If the
+ * daemon is down it falls back to fixtures so the cockpit (and Storybook) still
+ * renders. ZERO TELEMETRY: one network target, the local daemon. Nothing phones home.
  */
-
-// Configurable daemon origin; default = @ringtail/config's DAEMON_PORT (4880) on localhost.
-// ponytail: portless URLs aren't wired yet — swap this default for the portless
-// daemon URL once ./tilt_up.sh assigns one.
-const DAEMON_URL = import.meta.env.VITE_DAEMON_URL ?? "http://localhost:4880";
-
-const ENVS = ["dev", "staging", "prod"] as const;
-
-// Shown when the daemon is down — same shape as /api/status, honestly all needs-consent.
-const STUB: ProviderStatus[] = [
-  {
-    id: "cloudflare",
-    envVars: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
-    envs: { dev: "needs-consent", staging: "needs-consent", prod: "needs-consent" },
-  },
-  {
-    id: "database",
-    envVars: ["DATABASE_URL"],
-    envs: { dev: "needs-consent", staging: "needs-consent", prod: "needs-consent" },
-  },
-  {
-    id: "resend",
-    envVars: ["RESEND_API_KEY"],
-    envs: { dev: "needs-consent", staging: "needs-consent", prod: "needs-consent" },
-  },
-];
-
-const CELL: Record<ConnStatus, { glyph: string; label: string; color: string }> = {
-  // Green is SACRED — only a genuinely synced key earns it.
-  connected: { glyph: "✓", label: "connected", color: moonlit.green },
-  missing: { glyph: "✗", label: "missing", color: moonlit.danger },
-  "needs-consent": { glyph: "⏳", label: "needs consent", color: moonlit.amberDeep },
-};
-
 export function App() {
-  const [providers, setProviders] = useState<ProviderStatus[]>(STUB);
+  const [snapshot, setSnapshot] = useState<DaemonSnapshot>(fixtureSnapshot);
   const [live, setLive] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch(`${DAEMON_URL}/api/status`)
-      .then((r) => r.json() as Promise<{ providers: ProviderStatus[] }>)
-      .then((d) => {
-        if (cancelled) return;
-        setProviders(d.providers);
+    return subscribeLive(
+      (snap) => {
+        setSnapshot(snap);
         setLive(true);
-      })
-      .catch(() => {
-        // Daemon down → keep the stub. Not an error the human needs to see; the
-        // status pill already says "daemon offline".
-      });
-    return () => {
-      cancelled = true;
-    };
+      },
+      () => setLive(false),
+    );
   }, []);
 
   return (
     <>
       <style>{cssVars(moonlit)}</style>
+      <style>{allKeyframes}</style>
       <div
         style={{
           minHeight: "100vh",
@@ -79,16 +42,23 @@ export function App() {
       >
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
           <Header live={live} />
-          <Grid providers={providers} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+            <Badge>MIT</Badge>
+            <Badge tone="berry">local-first</Badge>
+            <Badge tone="amber">no telemetry</Badge>
+            <Badge tone="berry">🔒 agent never sees your secrets</Badge>
+          </div>
+          <LiveGrid grid={snapshot.grid} />
         </div>
       </div>
+      {snapshot.wizard && <WizardModal wizard={snapshot.wizard} />}
     </>
   );
 }
 
 function Header({ live }: { live: boolean }) {
   return (
-    <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 40 }}>
+    <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24 }}>
       <img
         src={roccoChill}
         alt="Rocco, the Ringtail bandit"
@@ -139,89 +109,7 @@ function StatusPill({ live }: { live: boolean }) {
         whiteSpace: "nowrap",
       }}
     >
-      {live ? "● daemon live" : "○ daemon offline — showing stub"}
+      {live ? "● daemon live" : "○ daemon offline — showing fixtures"}
     </span>
-  );
-}
-
-function Grid({ providers }: { providers: ProviderStatus[] }) {
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-        <thead>
-          <tr>
-            <Th>provider</Th>
-            {ENVS.map((e) => (
-              <Th key={e} align="center">
-                {e}
-              </Th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {providers.map((p) => (
-            <tr key={p.id} style={{ borderTop: `1px solid var(--line)` }}>
-              <td style={{ padding: "16px 12px" }}>
-                <div style={{ fontFamily: font.ui, fontWeight: 600 }}>{p.id}</div>
-                <div style={{ fontFamily: font.mono, fontSize: 11, color: "var(--ink-soft)" }}>
-                  {p.envVars.join(" · ")}
-                </div>
-              </td>
-              {ENVS.map((e) => (
-                <Cell key={e} status={p.envs[e]} />
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function Th({
-  children,
-  align = "left",
-}: {
-  children: React.ReactNode;
-  align?: "left" | "center";
-}) {
-  return (
-    <th
-      style={{
-        textAlign: align,
-        padding: "0 12px 12px",
-        fontFamily: font.mono,
-        fontSize: 12,
-        textTransform: "uppercase",
-        letterSpacing: "0.08em",
-        color: "var(--ink-soft)",
-        fontWeight: 500,
-      }}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Cell({ status }: { status: ConnStatus }) {
-  const c = CELL[status];
-  return (
-    <td style={{ padding: "16px 12px", textAlign: "center" }}>
-      <span
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          color: c.color,
-          fontFamily: font.mono,
-          fontSize: 13,
-        }}
-      >
-        <span aria-hidden style={{ fontSize: 15 }}>
-          {c.glyph}
-        </span>
-        {c.label}
-      </span>
-    </td>
   );
 }

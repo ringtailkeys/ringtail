@@ -3,8 +3,15 @@ import { getEnv } from "@ringtail/config";
 import { getRecipe, RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
 import { syncCredential, type Environment } from "@ringtail/sinks";
 import { putCredential, readStore } from "@ringtail/store";
+import { GRID_ENVS, type GridEnv, type GridRow } from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
+
+// The generative-UI contract (Wizard/Step/Action + the env axis) — the surface
+// the daemon validates and the dashboard renders. Re-exported through the public door.
+export * from "./wizard";
+// The offline mock provider — dev daemon + the P2 driver reach it through core's door.
+export { startMockProvider, type MockProvider } from "./mock-provider";
 
 /**
  * @ringtail/core — the engine. Every provider walks ONE credential lifecycle:
@@ -82,6 +89,23 @@ export function connectionMap(): ProviderStatus[] {
     >;
     return { id: recipe.id, envVars: recipe.envVars, envs };
   });
+}
+
+/**
+ * Seed the live cockpit grid: every real recipe × {local,dev,staging,prod}, all
+ * cells "missing" (a fresh machine — nothing raided yet). The daemon holds this as
+ * mutable state; MCP tool calls flip cells as the agent drives. Provider list +
+ * env-var names come from RECIPES (single source of truth), never hardcoded.
+ */
+export function gridSeed(): GridRow[] {
+  return Object.values(RECIPES).map((recipe) => ({
+    provider: recipe.id,
+    envVars: recipe.envVars,
+    envs: Object.fromEntries(GRID_ENVS.map((e) => [e, "missing" as CredentialStatus])) as Record<
+      GridEnv,
+      CredentialStatus
+    >,
+  }));
 }
 
 // ── the plan (read .env.example → gap per env) ───────────────────────────────

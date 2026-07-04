@@ -1,4 +1,8 @@
 {
+  "$comment": "`bun-types` + `node` for Bun.serve, import.meta.main, and the bun:test leak-guard + driver.",
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun-types", "node"]
+  },
   "include": ["src"]
 }

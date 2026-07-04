@@ -10,7 +10,8 @@
     "@ringtail/config": "workspace:*",
     "@ringtail/recipes": "workspace:*",
     "@ringtail/sinks": "workspace:*",
-    "@ringtail/store": "workspace:*"
+    "@ringtail/store": "workspace:*",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "bun-types": "^1.1.34"

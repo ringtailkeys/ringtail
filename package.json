@@ -13,6 +13,8 @@
     "typecheck": "nx run-many -t typecheck",
     "lint": "nx run-many -t lint",
     "check": "nx run-many -t typecheck lint",
+    "check:no-leak": "bun test services/daemon/src/no-leak.test.ts",
+    "demo": "bun services/daemon/src/demo-drive.ts",
     "storybook": "storybook dev -p ${PORT:-6006} --no-open",
     "build-storybook": "storybook build"
   },
@@ -42,5 +44,8 @@
     "typescript-eslint": "^8.62.1",
     "vite": "^6.0.7"
   },
-  "packageManager": "bun@1.1.34"
+  "packageManager": "bun@1.1.34",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
 }
