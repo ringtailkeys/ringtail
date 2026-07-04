@@ -32,9 +32,10 @@ function quotedIn(list: string): string[] {
 
 // ── derive the surface from code ─────────────────────────────────────────────
 
-/** MCP tools: every `server.registerTool("name", …)` in the daemon's MCP surface. */
+/** MCP tools: every tool registration in the daemon's MCP surface — matches both the
+ *  raw `server.registerTool("name", …)` and the typed `tool("name", …)` wrapper. */
 const mcpTools = [
-  ...read("services/daemon/src/mcp.ts").matchAll(/registerTool\(\s*["']([^"']+)["']/g),
+  ...read("services/daemon/src/mcp.ts").matchAll(/\btool(?:<[^>]*>)?\(\s*server\s*,\s*["']([^"']+)["']/g),
 ].map((m) => m[1]);
 
 /** CLI commands: the literals the run() dispatch compares argv against (`up`, `plan`). */
