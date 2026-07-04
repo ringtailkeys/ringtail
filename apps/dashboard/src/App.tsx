@@ -56,7 +56,6 @@ export function App() {
             <Badge>MIT</Badge>
             <Badge tone="berry">local-first</Badge>
             <Badge tone="amber">no telemetry</Badge>
-            <Badge tone="berry">🔒 agent never sees your secrets</Badge>
           </div>
           {live && <AgentPicker />}
           <LiveGrid grid={snapshot.grid} />
@@ -122,8 +121,34 @@ function Header({ live }: { live: boolean }) {
           your keys, raided · washed · stashed
         </p>
       </div>
-      <StatusPill live={live} />
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+        <StatusPill live={live} />
+        <TrustIndicator />
+      </div>
     </header>
+  );
+}
+
+// Persistent, always-on (independent of daemon state): the guarantee never disappears,
+// with Rocco's line as the tasteful undertone. This is the header trust anchor.
+function TrustIndicator() {
+  return (
+    <span
+      title='"your keys. my paws only." — Rocco'
+      style={{
+        fontFamily: font.mono,
+        fontSize: 12,
+        letterSpacing: "0.04em",
+        padding: "6px 12px",
+        borderRadius: radius.pill,
+        border: "1px solid color-mix(in srgb, var(--green) 40%, var(--line))",
+        background: "color-mix(in srgb, var(--green) 10%, transparent)",
+        color: "var(--green)",
+        whiteSpace: "nowrap",
+      }}
+    >
+      🔒 agent never sees your secrets
+    </span>
   );
 }
 
