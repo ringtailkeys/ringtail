@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { getEnv } from "@ringtail/config";
 import { getRecipe, RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
 import { syncCredential, type Environment } from "@ringtail/sinks";
-import { putCredential, readStore } from "@ringtail/store";
+import { putCredential, readStore, resolveRootCreds } from "@ringtail/store";
 import { GRID_ENVS, type GridEnv, type GridRow } from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
@@ -204,10 +204,17 @@ export class Provisioner {
     this.to("needs-consent");
   }
 
-  /** Mint a scoped token (OAuth-style). Moves to `validating` (validate is next). */
+  /** Mint a scoped token (OAuth-style), OR — for a guided recipe with no mint (e.g.
+   * real cloudflare) — load the root creds the user already pasted (submitStep →
+   * @ringtail/store). Either way `#values` holds the creds validate/provision need:
+   * the "swap endpoints" seam that lets a real recipe drive identically to the mock.
+   * Moves to `validating` (validate is next). */
   async mint(): Promise<void> {
     if (this.#recipe.mint) {
       this.#values = { ...this.#values, ...(await this.#recipe.mint()) };
+    } else if (this.#recipe.rootCredKeys?.length) {
+      const stored = resolveRootCreds(this.#recipe.rootCredKeys);
+      if (stored) this.#values = { ...this.#values, ...stored };
     }
     this.to("validating");
   }

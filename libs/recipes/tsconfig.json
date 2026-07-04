@@ -1,4 +1,8 @@
 {
+  "$comment": "Extends the single-source-of-truth base. `bun-types` + `node` for the bun:test recipe unit tests (cloudflare deep-link + verify-parse fixtures).",
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["bun-types", "node"]
+  },
   "include": ["src"]
 }
