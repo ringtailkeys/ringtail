@@ -1,0 +1,98 @@
+# Ringtail — Architecture & Agent↔UI Contract (P0, the pin)
+
+**Status:** founding spec. This freezes the decisions the design converged on. Build against this.
+
+## North star
+You run one command, pick your coding agent, and **it drives everything** — discover → acquire → validate → provision → sync your keys, then surface repo-specific next actions — while you watch progress and make only the calls a human must (consent clicks, approve an action). The tool is **local, OSS, zero-telemetry**; the agent never sees a secret value.
+
+## The core principle — generative UI over MCP
+**The agent supplies structured content through MCP; Ringtail owns every pixel.**
+- The MCP schema is a **UI-component vocabulary** (`Wizard`, `Step`, `Action`, `Status`). The agent fills typed slots — it never emits HTML/markdown/CSS.
+- Each type maps 1:1 to a component in the `libs/ui` "Night Shift" design system → agent output is **on-brand by construction**.
+- Schema-validated data → **safe** (no injection) *and* **beautiful** (no ugly freeform output). Constrained vocabulary is the moat for both quality and security.
+- Agent = director (*what*); Ringtail = stage + actors (*pixels*).
+
+This is why the design system was built first: it's the render target.
+
+## THE GUARANTEE — "the agent never sees your secrets" (enforced, not promised)
+The #1 trust claim and the product's spine. It is an **enforced, verifiable invariant** — not marketing copy:
+- **Architecture makes it impossible.** There is NO MCP tool that returns a secret value. The agent's entire surface = key *names* + status + wizard/action content. `paste` values flow **user → daemon → validate → `libs/store`** and never cross the MCP boundary. There is literally no code path from a stored secret to the agent.
+- **Tested + CI-gated.** A leak-guard (`check:no-leak`) statically scans the MCP surface + asserts at runtime that no tool response carries a value + an e2e assertion — wired into CI as a **build gate**. Violating the invariant **fails the build**, exactly like the boundary lint. The promise can't silently rot.
+- **Auditable.** It's OSS — don't trust us, read the ~200 lines and run the test.
+- **Surfaced everywhere** (per the founder's direction): landing hero + a dedicated trust section (diagram: *value → Ringtail, local; agent → names only*); `README.md` + `SECURITY.md` up top; and a **persistent UI affordance** — every `paste` step shows "🔒 goes to Ringtail, not the agent," a header trust indicator, and Rocco's line ("your keys. my paws only.").
+
+We stand behind it by making it *structurally true and provable*, not by asking to be believed.
+
+## The daemon (always-on local host)
+A Hono daemon is the single local host. It:
+- serves the **dashboard** UI, and
+- is the **MCP server**, over **Streamable HTTP** (`http://127.0.0.1:<port>/mcp`) — NOT stdio, because the dashboard and the agent must share ONE live state (connection map, consent callbacks). stdio would spawn a separate per-session server with its own state.
+- **Security (non-negotiable for a creds tool):** bind `127.0.0.1` only; mint a **session token** on `ringtail up`, required on every MCP call + shared with the dashboard and the registered agent; Origin/CSRF checks. A stdio→HTTP shim (`ringtail mcp-stdio`) bridges stdio-only clients without forking state.
+
+## Entry & agent selection (OpenDesign pattern)
+- **Dashboard-first:** `npx ringtail` (`ringtail up`) → boots the daemon → opens the dashboard → **auto-detects agent CLIs on PATH** (claude · codex · cursor · gemini) → you pick one (or "guided/manual") → Ringtail registers + spawns it with the task + the MCP URL+token → it drives; the dashboard streams progress and surfaces consent.
+- **Agent-first:** already in Claude Code → `claude mcp add ringtail --transport http http://127.0.0.1:<port>/mcp --header "Authorization: Bearer <token>"` → "set up my keys." Dashboard opens as the visual surface.
+
+## The env axis
+`local · dev · staging · prod`.
+- **local** = your machine, `.env.local`, localhost — the only env that touches your disk.
+- **dev · staging · prod** = deployed; secrets → **Infisical only**, never your disk. Each gets its own scoped keys/resources (e.g. a Neon branch per env).
+- Sink routing: `local → .env.local`; `dev/staging/prod → Infisical`.
+
+## The unified contract (one schema for setup AND actions)
+"Set up an unknown key" and "do this next action" are the **same structured thing**, rendered by one universal 1-2-3 wizard.
+
+```ts
+type StepKind = 'open-url' | 'paste' | 'auto' | 'confirm';
+interface Step { id: string; title: string; description: string; kind: StepKind;
+                 payload?: { url?: string; varName?: string; scopes?: string[] };
+                 danger?: 'safe' | 'confirm' | 'destructive';
+                 status: 'pending' | 'active' | 'done' | 'failed'; }
+interface Wizard { id: string; title: string; provider?: string; steps: Step[]; }
+interface Action { id: string; title: string; why: string; prerequisites: string[];
+                   danger: 'safe' | 'confirm' | 'destructive'; wizard: Wizard; }
+```
+
+**Step kinds — and the trust linchpin:**
+- `open-url` — Ringtail opens the deep-link (must be an https provider URL; allowlist-validated, not arbitrary).
+- `paste` — **the value flows user → Ringtail, NEVER through the agent.** The agent authors the step ("paste your Resend key, needs `sending` scope"); Ringtail collects + validates (validate-after-paste) + stores. This is what keeps "the agent never sees your secrets" true even for agent-generated wizards.
+- `auto` — a typed executor / API call, no human.
+- `confirm` — human approval; `destructive` (domain transfer, NS swap, delete) hard-gated, never one-click.
+
+The agent **checks off each step as it completes** (streamed) → the wizard advances live.
+
+## MCP tools (the surface)
+- `plan(context) → Status[]` — scan `.env.example` + connected state → the grid (providers × `local/dev/staging/prod`, 7 states). Emits key **names**, never values.
+- `authorWizard(context) → Wizard` — agent maps repo + connected state → a setup wizard for a provider we don't have a recipe for (or any custom flow).
+- `mapActions(context) → Action[]` — agent maps repo-specific next steps (domain→CF, Infisical→CF bindings, Neon branch per env, R2 bucket…).
+- `renderWizard(wizard)` / `renderActions(actions)` — push validated content to the dashboard.
+- `updateStatus(provider, env, status)` — flip a grid cell.
+- `submitStep(stepId, ...)` + callbacks — human completes a `paste`/`confirm` → daemon notifies the agent (the Loop callback).
+
+## Recipes vs agent-authored wizards
+- **Recipes** (`libs/recipes`, the ~7 curated: cloudflare/neon/better-auth/resend/posthog/infisical/creem) = the **fast-path** — tested, one-click, deterministic.
+- **Agent-authored wizards** = the **universal fallback** for the infinite long tail (any provider, any action), via `authorWizard` + Context7 live docs.
+- Net: **we don't need many recipes to be useful** — the agent covers everything. Recipes are an optimization, not a requirement. Kills the maintenance tax.
+
+## Local credential discovery
+Before asking, scan **known** credential stores (`.env.local`, `~/.ringtail`, `~/.aws/credentials`, `~/.config/gh`, `~/.wrangler`/`~/.cloudflared`, env) → validate → reuse → only prompt for real gaps. Read *known* locations only, local-only, transparent about what was reused. Never scan the whole disk.
+
+## Guardrails (the trust product)
+1. Every agent-produced payload is **schema-validated**; malformed → rejected. No freeform HTML/markdown as UI.
+2. `paste` values go **user → tool, never through the agent**. The agent never sees secret values (works with key *names* + connections + repo).
+3. `open-url` URLs allowlist-validated (https provider domains).
+4. `auto` = typed executors, not arbitrary shell. Novel agent steps get extra human review.
+5. `destructive` steps hard-confirm.
+6. **Zero telemetry.** No analytics, no phone-home, ever.
+
+## Roadmap
+- **P0** — this doc.
+- **P1** — `local` column + sink routing.
+- **P2 ⭐** — the agent-drives-it spine *against the mock*: daemon MCP-over-HTTP + token, the tools above, the **universal wizard renderer** + check-off streaming, the agent picker, dashboard wired live (SSE). Proves the whole UX with zero real cloud.
+- **P3** — real provider: Cloudflare (flesh out `TODO(c7)`, device-flow consent, validate-after-mint against a real account). The krispyai dogfood.
+- **P4** — the actions panel + first executor (domain→CF, hard-confirm).
+- **P5** — local discovery + the rest of krispyai's stack.
+
+## Fits the ecosystem
+- Ships as a **Delulus "Provision your stack" Move** (Navigator triggers it via MCP; consent = a Loop human-handoff; status back, never values).
+- Monetization: OSS + audience is the near-term ROI; the one clean paid seam is **self-hosted enterprise governance** (audit · scope-policy · RBAC/SSO). Never become a key-holding cloud broker; never add telemetry.
