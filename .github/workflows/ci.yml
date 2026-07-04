@@ -13,11 +13,6 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    # One project's tsc is heavy (peaks ~6GB); give it real headroom on the 16GB
-    # public runner so typecheck/lint don't OOM. TODO: bisect which project + why
-    # (suspected: a type-heavy dep pulled during a lockfile regen) and trim it.
-    env:
-      NODE_OPTIONS: --max-old-space-size=10240
     steps:
       - uses: actions/checkout@v4
 
@@ -28,14 +23,11 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      # --parallel=1: one project's tsc is heavy (~6GB+); running 3-wide (nx default)
-      # lets the parallel processes collectively exceed the 16GB runner and OOM.
-      # Serialize so the heavy one gets the whole box.
       - name: Typecheck
-        run: bunx nx run-many -t typecheck --parallel=1
+        run: bunx nx run-many -t typecheck
 
       - name: Lint (module boundaries)
-        run: bunx nx run-many -t lint --parallel=1
+        run: bunx nx run-many -t lint
 
       - name: THE GUARANTEE (no secret ever reaches the agent)
         run: bun run check:no-leak
