@@ -1,12 +1,14 @@
 import {
   gridSeed,
   type Action,
+  type ActiveProject,
   type ChatChoice,
   type ChatMessage,
   type CredentialStatus,
   type DaemonSnapshot,
   type GridEnv,
   type GridRow,
+  type SelectedAgent,
   type Step,
   type StepStatus,
   type Wizard,
@@ -33,12 +35,25 @@ export class DaemonStore {
    * (pollChat). The transcript (#chat) is display; this is delivery. Value-free —
    * intent text only, same as #chat. */
   #inbox: string[] = [];
+  /** Onboarding gate state (architecture.md §"Entry & agent selection"): the agent
+   * connected in step 1 + the project chosen in step 2. Names/paths only, no secrets.
+   * The dashboard gates which step it shows off these two, restored from the primed
+   * SSE snapshot on reload. */
+  #agent: SelectedAgent | null = null;
+  #project: ActiveProject | null = null;
   readonly #subs = new Set<Subscriber>();
 
   /** ponytail: returns live refs (mutate-then-emit). Fine single-threaded; the
    * SSE layer JSON-serializes at send time so subscribers get an immutable copy. */
   snapshot(): DaemonSnapshot {
-    return { grid: this.#grid, wizard: this.#wizard, actions: this.#actions, chat: this.#chat };
+    return {
+      grid: this.#grid,
+      wizard: this.#wizard,
+      actions: this.#actions,
+      chat: this.#chat,
+      agent: this.#agent,
+      project: this.#project,
+    };
   }
 
   /** Subscribe to state changes; primes the subscriber with the current snapshot. */
@@ -73,6 +88,28 @@ export class DaemonStore {
       if (!row) continue;
       for (const e of Object.keys(row.envs) as GridEnv[]) row.envs[e] = "validated";
     }
+    this.#emit();
+  }
+
+  /** Step 1 → connect (or disconnect) the coding agent. Clearing the agent also
+   * clears the project — the onboarding gate falls all the way back to step 1. */
+  setAgent(agent: SelectedAgent | null): void {
+    this.#agent = agent;
+    if (!agent) this.#project = null;
+    this.#emit();
+  }
+
+  /** Step 2 → set (or clear) the active project. Names/path only. The daemon rebuilds
+   * the grid from that project's `.env.example` via setGrid; this just tracks scope. */
+  setProject(project: ActiveProject | null): void {
+    this.#project = project;
+    this.#emit();
+  }
+
+  /** Replace the whole grid — the (re)build from the chosen project's `.env.example`
+   * (or the recipe-seeded default on reset). Statuses + var NAMES only, never values. */
+  setGrid(grid: GridRow[]): void {
+    this.#grid = grid;
     this.#emit();
   }
 

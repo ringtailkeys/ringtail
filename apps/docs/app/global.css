@@ -1,0 +1,58 @@
+/**
+ * @ringtail/docs global styles — Fumadocs UI on Tailwind v4, re-skinned to the
+ * "Night Shift" design system so the docs read as the same product as the cockpit.
+ *
+ * The --color-fd-* values below MIRROR libs/ui/src/tokens.css (the brand source of
+ * truth). ponytail: mirrored, not imported — Fumadocs themes through its OWN css
+ * vars, and libs/ui is React-18 TSX; copying ~14 hexes beats wiring a cross-package
+ * import for zero rendering gain. Keep in sync with libs/ui/src/tokens.css.
+ */
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Tailwind must scan Fumadocs's compiled components for their utility classes.
+   fumadocs-ui hoists to the workspace root under bun; the second path covers a
+   non-hoisted (local) install. A non-matching glob is silently ignored. */
+@source "../../../node_modules/fumadocs-ui/dist/**/*.js";
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
+
+/* Moonlit — light (default). */
+:root {
+  --color-fd-background: #f6eddd;
+  --color-fd-foreground: #211a1e;
+  --color-fd-muted: #fcf6ec;
+  --color-fd-muted-foreground: #6e5e52;
+  --color-fd-popover: #fcf6ec;
+  --color-fd-popover-foreground: #211a1e;
+  --color-fd-card: #fcf6ec;
+  --color-fd-card-foreground: #211a1e;
+  --color-fd-border: #e4d8c4;
+  --color-fd-primary: #d6851a;
+  --color-fd-primary-foreground: #fcf6ec;
+  --color-fd-secondary: #f0e6d4;
+  --color-fd-secondary-foreground: #211a1e;
+  --color-fd-accent: #f0e6d4;
+  --color-fd-accent-foreground: #211a1e;
+  --color-fd-ring: #f5a524;
+}
+
+/* Graveyard — the dark nocturne. */
+.dark {
+  --color-fd-background: #17110f;
+  --color-fd-foreground: #f6eddd;
+  --color-fd-muted: #211a1e;
+  --color-fd-muted-foreground: #aa9d8c;
+  --color-fd-popover: #211a1e;
+  --color-fd-popover-foreground: #f6eddd;
+  --color-fd-card: #211a1e;
+  --color-fd-card-foreground: #f6eddd;
+  --color-fd-border: #33262a;
+  --color-fd-primary: #f5a524;
+  --color-fd-primary-foreground: #17110f;
+  --color-fd-secondary: #2a2024;
+  --color-fd-secondary-foreground: #f6eddd;
+  --color-fd-accent: #2a2024;
+  --color-fd-accent-foreground: #f6eddd;
+  --color-fd-ring: #f5a524;
+}

@@ -1,0 +1,51 @@
+---
+title: MCP tools
+description: The exact tool surface a coding agent drives over the daemon's MCP connection. Every tool returns names + status, never a value.
+---
+
+These are the tools the daemon exposes over MCP (Streamable HTTP, `127.0.0.1/mcp`, session
+token required). The whole surface is the generative-UI vocabulary: the agent supplies
+structured content; the daemon owns the pixels and the creds. **No tool returns a secret
+value** — that is enforced by `check:no-leak`.
+
+## Plan & status
+
+- **`plan()` → `Status[]`** — scan the manifest + connected state → the grid (providers ×
+  `local/dev/staging/prod`). Emits key **names** and status, never values.
+- **`updateStatus(provider, env, status)`** — flip one grid cell to a credential status.
+
+## Author & render the UI
+
+- **`authorWizard(provider)` → `Wizard`** — derive the curated recipe's on-brand 1-2-3 setup
+  wizard (`open-url` → `paste` → `provision`) and push it to the cockpit. Returns step names +
+  kinds.
+- **`renderWizard(wizard)`** — push an agent-authored `Wizard` (the long-tail fallback) to the
+  cockpit. Schema-validated; malformed is rejected.
+- **`mapActions(actions)` → `Action[]`** — map the repo-specific + cross-tool next steps into
+  the actions panel. Each `Action` is schema-validated. Returns names + prerequisites + danger
+  + executor.
+- **`renderActions(actions)`** — re-render the living action panel as the user steers it.
+
+## Complete & execute
+
+- **`submitStep(stepId, value?)`** — the **one** inbound value path. For a `paste` step the
+  value flows user → daemon (validated + stored) and is **never echoed back**. Returns status +
+  var name only.
+- **`executeStep(stepId)`** — the daemon runs the provisioning loop (mint → validate-after-mint
+  → provision → sync) with the stored creds. Returns status + key names.
+- **`executeAction(id, confirmed?)`** — run a mapped action through the gates (prereqs →
+  hard-confirm → dispatch). A `destructive` action is refused unless `confirmed: true`. Returns
+  status + key names.
+
+## Chat (the direction channel)
+
+- **`sendChat(message, choices?)`** — agent → user in the dashboard chat, optionally with
+  tappable choice pills. Text/intent only, never a value.
+- **`pollChat()`** — drain pending user chat (user → agent) to act on, then re-render
+  actions/wizards to match.
+
+<Callout type="warn">
+Notice what's absent: there is no `getSecret`, no `readValue`, no tool that hands the agent a
+credential. The agent's entire world is names, statuses, and the UI it authors. See
+[The guarantee](/docs/concepts/the-guarantee).
+</Callout>

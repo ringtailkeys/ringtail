@@ -1,0 +1,44 @@
+---
+title: CLI
+description: The `ringtail` command — print the plan, boot the cockpit, or emit agent-readable JSON.
+---
+
+The `ringtail` bin is the terminal surface. It reads `./.env.example` (the manifest) from the
+directory you run it in and **never prints secret values** — the plan and `--json` emit key
+**names** and status only.
+
+```text
+ringtail — provision every API key a new project needs.
+
+Usage:
+  ringtail            Print the plan (reads ./.env.example — the manifest).
+  ringtail up         Boot the daemon + dashboard and open the cockpit.
+  ringtail --json     Agent mode: JSON status of what's MISSING (no secret values).
+  ringtail --help     Show this help.
+```
+
+## `ringtail`
+
+Prints the plan — every credential the project needs, grouped by section, with a `✓` for
+present and `○` for missing, and a count of how many are left to provision.
+
+## `ringtail up`
+
+Boots the daemon (MCP + SSE + `/api`) and the dashboard (the Vite SPA), waits for the daemon's
+`/health`, then opens the cockpit in your browser. Ports come from `@ringtail/config`
+(`DAEMON_PORT`, `DASHBOARD_PORT`) — never hardcoded. Ctrl-C tears both down.
+
+## `ringtail --json`
+
+Agent mode. Emits the **missing** keys as JSON — names + section only, never values — so a
+coding agent can read what's left to do:
+
+```json
+{
+  "missing": [{ "key": "RESEND_API_KEY", "section": "Email" }],
+  "total": 7
+}
+```
+
+`--json` also works with `up` as a dry-run: it reports what `up` *would* boot (the daemon +
+dashboard URLs) without spawning anything — testable and CI-safe.

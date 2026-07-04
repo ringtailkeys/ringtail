@@ -1,8 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
 import { getEnv } from "@ringtail/config";
 import {
   connectionMap,
   defaultEnvironment,
+  gridFromExample,
+  gridSeed,
   provisionCredential,
   reuseKnownCredentials,
 } from "@ringtail/core";
@@ -11,6 +15,7 @@ import { Hono } from "hono";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
+import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
 import { applyStep } from "./submit";
 
@@ -169,6 +174,55 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
     const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
     return c.json({ agents: detectAgents(mcpUrl, token) });
+  });
+
+  // POST /api/agent — step 1 gate: connect (or disconnect) the coding agent. Body
+  // `{ id }` picks a detected agent (or "manual"); an empty body clears it and falls
+  // the onboarding gate back to step 1 (also clears the project + reseeds the grid).
+  // The NAME is resolved server-side (never trust a client-supplied label). No token
+  // or secret is ever stored here — the agent's token rides the MCP connect command.
+  app.post("/api/agent", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { id?: string };
+    if (!body.id) {
+      store.setAgent(null); // also clears project
+      store.setGrid(gridSeed());
+      return c.json({ ok: true, agent: null });
+    }
+    const mcpUrl = `${new URL(c.req.url).origin}/mcp`;
+    const found = detectAgents(mcpUrl, token).find((a) => a.id === body.id);
+    const name = found?.name ?? (body.id === "manual" ? "guided / manual" : body.id);
+    store.setAgent({ id: body.id, name });
+    return c.json({ ok: true, agent: { id: body.id, name } });
+  });
+
+  // GET /api/projects — step 2 candidates: local dirs that carry a `.env.example`
+  // (the manifest Ringtail is scoped to). Names + paths only, never file contents.
+  app.get("/api/projects", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    return c.json({ projects: scanProjects() });
+  });
+
+  // POST /api/project — step 2 gate: set (or clear) the active project. Body `{ path }`
+  // must point at a dir with a `.env.example`; the daemon rebuilds the grid FROM that
+  // project's manifest (gridFromExample) and advances to the cockpit. Empty body clears
+  // the project + reseeds the grid (falls back to step 2). Names/paths only, no secrets.
+  app.post("/api/project", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { path?: string };
+    if (!body.path) {
+      store.setProject(null);
+      store.setGrid(gridSeed());
+      return c.json({ ok: true, project: null });
+    }
+    const examplePath = join(body.path, ".env.example");
+    if (!existsSync(examplePath)) {
+      return c.json({ error: "no .env.example at that path" }, 400);
+    }
+    const project = { path: body.path, name: basename(body.path) };
+    store.setProject(project);
+    store.setGrid(gridFromExample(examplePath));
+    return c.json({ ok: true, project });
   });
 
   // ── MCP over Streamable HTTP (Web-Standard transport) ──────────────────────

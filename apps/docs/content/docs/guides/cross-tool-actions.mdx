@@ -1,0 +1,45 @@
+---
+title: Cross-tool actions
+description: Once the root keys are in, the agent maps the repo-specific next steps — like pointing a domain at Cloudflare — and runs the safe ones automatically.
+---
+
+Getting keys is layer 1. The payoff is layer 2 and 3: with a root grant in hand, the agent
+maps the **actions now possible** for *your* repo and does the safe ones without you.
+
+## What "actions" are
+
+The agent calls `mapActions` and the cockpit renders a living panel of repo-specific and
+cross-tool steps, for example:
+
+- a Neon branch per environment,
+- wire Infisical → Cloudflare Pages bindings,
+- set a Workers binding,
+- point a domain at Cloudflare,
+- create the R2 bucket your code already references.
+
+Each `Action` carries a `why`, its `prerequisites`, a `danger` level, and the wizard that runs
+it. It's schema-validated at the boundary — malformed is rejected.
+
+## Directing the panel
+
+The action list is *living*, not fixed. Talk to the agent in the dashboard chat:
+
+- *"also set up Stripe"* → it adds the action,
+- *"skip the R2 bucket"* → it removes it,
+- *"add a staging env"* → it adjusts and re-renders.
+
+You steer; it re-maps. Ask *"why does this need that scope?"* and it answers in chat, grounded
+in your repo — without leaving the cockpit.
+
+## Example: domain → Cloudflare
+
+The `domain→CF` executor points a domain at Cloudflare. A nameserver swap is **destructive**,
+so it is **hard-confirmed** — never one-click. The flow is: the agent maps the action, you
+approve, you clear the confirm gate, then the daemon executes with the stored creds and streams
+status back.
+
+<Callout title="The automation bias">
+Safe actions (create a DB branch, set an env var, wire a binding, create a bucket) just
+happen — making you approve every safe step kills the magic. Only irreversible ones (domain
+transfer, NS swap, delete) hard-confirm.
+</Callout>

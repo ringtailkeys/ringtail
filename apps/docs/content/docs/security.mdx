@@ -1,0 +1,63 @@
+---
+title: Security
+description: The guarantee, the threat model, how to audit it yourself, and how to report a vulnerability.
+---
+
+Ringtail is a credentials tool, so trust is the product. This page states the one guarantee it
+lives or dies by, the threat model behind it, and how you can audit it yourself in a few
+minutes. It mirrors [`SECURITY.md`](https://github.com/ringtailkeys/ringtail/blob/main/SECURITY.md)
+in the repo.
+
+## The guarantee
+
+Your coding agent orchestrates the whole flow — discover → acquire → validate → provision →
+sync — but **it never sees a secret value.** This is not a policy we ask you to trust; it is a
+structural invariant of the code, tested and CI-gated. The full mechanism is in
+[The guarantee](/docs/concepts/the-guarantee).
+
+## Threat model
+
+The agent (Claude, Codex, Cursor, Gemini) is a capable but **untrusted** party. It runs your
+task, authors wizards, and triggers actions over MCP. Assume it could be compromised,
+prompt-injected, or simply buggy — the guarantee must hold **even if the agent turns hostile.**
+Concretely, we defend against:
+
+- **Value exfiltration via MCP** — a tool that returns a value would hand it straight to the
+  agent. → *No such tool exists.*
+- **Value leakage via the state stream** — the live SSE feed could echo a pasted value back. →
+  *The stream carries names + statuses only.*
+- **The agent intercepting the paste** — if the paste flowed through the agent it would see the
+  value en route. → *Paste bypasses the agent entirely.*
+- **Injection through agent-authored UI** — freeform HTML/markdown would be an injection
+  surface. → *Every payload is schema-validated; malformed is rejected.*
+- **Network egress / phone-home** — analytics could ship data off-box. → *Zero telemetry. The
+  only network targets are the local daemon and the real provider APIs.*
+
+Out of scope: an attacker with local root on your machine (they can read `~/.ringtail`
+directly — that's the OS's trust boundary, not the agent's), and the provider's own handling of
+the key after mint.
+
+## Audit it yourself
+
+It's OSS — don't trust us, read it. The whole guarantee is a small surface:
+
+```bash
+# 1. Read the enforcement (~200 lines): the MCP tools + the leak-guard test.
+$EDITOR services/daemon/src/index.ts services/daemon/src/no-leak.test.ts
+
+# 2. Run the guard. It fails loudly if any value ever reaches the agent.
+bun run check:no-leak
+
+# 3. Run the full offline lifecycle (acquire → validate → provision → sync, no cloud).
+cd libs/core && bun test
+```
+
+If you can find a code path from a stored secret to an agent-visible message, that's a critical
+bug — please report it.
+
+## Reporting a vulnerability
+
+**Do not** open a public issue for a security report. Email the maintainers via the contact on
+[ringtailkeys.com](https://ringtailkeys.com) with steps to reproduce. We aim to acknowledge
+within 72 hours. Because the leak-guard is the product's spine, a confirmed break of the
+guarantee is treated as top severity.

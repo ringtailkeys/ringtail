@@ -1,0 +1,18 @@
+{
+  "$comment": "Nx `typecheck` target config. Separate from tsconfig.json because Next OWNS that one (it rewrites it + next-env.d.ts to reference the generated, gitignored .next/types on every dev/build). This config is Next-independent so `tsc --noEmit` is green on a fresh checkout with no prior build. `next build` remains the full route-type gate.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": [
+    "env.d.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "lib/**/*.ts",
+    "mdx-components.tsx",
+    "source.config.ts",
+    ".source/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".next"]
+}

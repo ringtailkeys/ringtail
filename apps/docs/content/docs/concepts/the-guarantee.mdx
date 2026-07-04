@@ -1,0 +1,49 @@
+---
+title: The guarantee
+description: The agent never sees a secret value — an enforced, verifiable invariant, not marketing copy.
+---
+
+The #1 trust claim and the product's spine: **the agent never sees your secrets.** It is an
+enforced, verifiable invariant of the code — not a policy we ask you to trust.
+
+## The mechanism
+
+A pasted key flows **you → the daemon → `libs/store`**, and never crosses the agent's MCP
+boundary. There is **no MCP tool that returns a secret value** — the agent's entire surface is
+key **names** + statuses + the wizard/action content it authors. When the daemon provisions,
+**it** makes the API calls with the stored creds and returns *status, not values*. There is
+literally no code path from a stored secret to the agent.
+
+## Why it holds even against a hostile agent
+
+The agent (Claude, Codex, Cursor, Gemini) is capable but **untrusted** — assume it could be
+prompt-injected, compromised, or just buggy. The guarantee holds anyway because it is
+structural:
+
+- **No value-returning tool.** The whole surface is `plan` / `authorWizard` / `mapActions` /
+  `renderWizard` / `renderActions` / `updateStatus` / `submitStep` / `executeStep` /
+  `executeAction` — every one returns names, statuses, or agent-authored content, never a
+  value.
+- **Paste bypasses the agent.** The value arrives at the daemon (`POST /api/step`, or
+  `submitStep`), is validated and stored, and is never echoed back into any tool result, the
+  SSE stream, or the browser response.
+- **Schema-validated UI.** Every agent-authored `Wizard` / `Step` / `Action` is
+  zod-validated; malformed is rejected. No freeform HTML/markdown as UI means no injection
+  surface.
+- **Zero telemetry.** The only network targets are the local daemon and the real provider
+  APIs. No analytics, no phone-home, ever.
+
+## Enforced, not asserted
+
+A leak-guard, `check:no-leak`, drives the full loop over MCP against the mock, captures every
+daemon → agent tool result **and** every SSE payload **and** the browser paste response, then
+asserts no sentinel value ever appears — while proving the loop really ran (the paste held its
+value, statuses flipped to `synced`). A leak **fails the build**, exactly like the boundary
+lint. The promise can't silently rot.
+
+```bash
+bun run check:no-leak
+```
+
+It's OSS — don't trust us, read it. Full threat model and how to audit in a few minutes:
+[Security](/docs/security).

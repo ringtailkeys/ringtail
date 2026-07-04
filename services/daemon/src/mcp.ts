@@ -1,9 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  type Action,
   ActionSchema,
   authorWizard,
+  type ChatChoice,
   ChatChoiceSchema,
   GRID_ENVS,
+  type GridEnv,
+  type Wizard,
   WizardSchema,
 } from "@ringtail/core";
 import { z } from "zod";
@@ -51,6 +56,34 @@ function ok(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
+/**
+ * Typed wrapper around `server.registerTool`.
+ *
+ * ponytail: passing our zod schemas straight to `registerTool` makes tsc infer each
+ * DEEP schema type (WizardSchema → nested StepSchema[], ActionSchema → nested Wizard)
+ * and then check it against the SDK's `AnySchema = z3.ZodTypeAny | z4.$ZodType` union.
+ * That check chases zod's self-referential `_refinement()` → `ZodEffects` → `ZodType`
+ * chain and recurses without bottoming out — `tsc` builds a 2.28 GB type graph and OOMs
+ * (fired on EVERY tool, even primitive-only ones). This wrapper stops the inference at the
+ * boundary (see the cast in the body) and hands the real arg type back via the explicit
+ * `<A>` generic, so call sites stay typed. The schema objects reach `registerTool`
+ * byte-for-byte unchanged, so runtime validation (and THE GUARANTEE) is identical — only
+ * the compile-time inference path changed.
+ */
+function tool<A>(
+  server: McpServer,
+  name: string,
+  config: { description: string; inputSchema?: z.ZodRawShape },
+  cb: (args: A) => CallToolResult | Promise<CallToolResult>,
+): void {
+  // Call through a widened signature so tsc NEVER instantiates registerTool's `InputArgs`
+  // generic. That inference is the actual bomb: it checks the schema type against the SDK's
+  // `AnySchema = z3.ZodTypeAny | z4.$ZodType` union, which chases zod's self-referential
+  // `_refinement()`/`ZodEffects` chain and detonates the type graph (→ 2.28 GB, tsc OOM).
+  // Runtime is untouched — the real `registerTool` still receives the real schema + handler.
+  (server.registerTool as (n: string, c: unknown, h: unknown) => void)(name, config, cb);
+}
+
 export function buildMcpServer(
   store: DaemonStore,
   opts: { repoName: string; envLocalPath?: string },
@@ -62,7 +95,8 @@ export function buildMcpServer(
   const engineOpts = { repoName: opts.repoName, envLocalPath: opts.envLocalPath };
 
   // plan() → the live grid (providers × local/dev/staging/prod). Names + status.
-  server.registerTool(
+  tool(
+    server,
     "plan",
     {
       description:
@@ -72,7 +106,8 @@ export function buildMcpServer(
   );
 
   // renderWizard(wizard) → validated UI state pushed to the dashboard.
-  server.registerTool(
+  tool<{ wizard: Wizard }>(
+    server,
     "renderWizard",
     {
       description:
@@ -94,7 +129,8 @@ export function buildMcpServer(
   // (open-url → paste → provision), pushes it to the cockpit, and returns names/kinds
   // only. This is the deterministic counterpart to an agent-authored (renderWizard)
   // wizard for the long tail — together with plan() it covers the whole manifest.
-  server.registerTool(
+  tool<{ provider: string }>(
+    server,
     "authorWizard",
     {
       description:
@@ -117,7 +153,8 @@ export function buildMcpServer(
   // chat ("also set up Stripe" / "skip X") is drained via pollChat, the agent re-maps,
   // and calls this again — the panel re-renders live over SSE. Each Action is schema-
   // validated (WizardSchema nested), NEVER carries a value (it's names + wizard steps).
-  server.registerTool(
+  tool<{ actions: Action[] }>(
+    server,
     "renderActions",
     {
       description:
@@ -138,7 +175,8 @@ export function buildMcpServer(
   // action panel and echoes back the validated set (names/intent + prerequisites +
   // danger + executor). NEVER a secret value. renderActions is the directable re-render;
   // mapActions is the initial map that returns the full validated Action[].
-  server.registerTool(
+  tool<{ actions: Action[] }>(
+    server,
     "mapActions",
     {
       description:
@@ -166,7 +204,8 @@ export function buildMcpServer(
   // Optional `choices` render as tappable pills (Delulus-chat style): "here are your
   // next moves" arrives as choices, not a wall of text. Each choice is schema-validated
   // (ChatChoiceSchema); a tapped pill's `value` returns via POST /api/chat → pollChat.
-  server.registerTool(
+  tool<{ message: string; choices?: ChatChoice[] }>(
+    server,
     "sendChat",
     {
       description:
@@ -182,7 +221,8 @@ export function buildMcpServer(
   // pollChat() → drain pending user direction (user → agent). The user's chat is
   // queued by POST /api/chat; the agent drains it here, then re-runs mapActions/
   // renderWizard/renderActions to match what the user asked. Returns intent text only.
-  server.registerTool(
+  tool(
+    server,
     "pollChat",
     {
       description:
@@ -192,7 +232,8 @@ export function buildMcpServer(
   );
 
   // updateStatus(provider, env, status) → flip one grid cell.
-  server.registerTool(
+  tool<{ provider: string; env: GridEnv; status: z.infer<typeof CREDENTIAL_STATUS> }>(
+    server,
     "updateStatus",
     {
       description: "Flip one grid cell to a credential status.",
@@ -207,7 +248,8 @@ export function buildMcpServer(
   // submitStep(stepId, value?) — the ONE inbound value path. For a `paste` step the
   // VALUE arrives here (user → daemon), is validated + stored to disk, and the
   // response carries only the var NAME + status. The value NEVER crosses back out.
-  server.registerTool(
+  tool<{ stepId: string; value?: string }>(
+    server,
     "submitStep",
     {
       description:
@@ -219,7 +261,8 @@ export function buildMcpServer(
 
   // executeStep(stepId) → the daemon runs the mock loop (mint → validate-after-mint
   // → provision → sync) with the stored creds. Returns status + key names only.
-  server.registerTool(
+  tool<{ stepId: string }>(
+    server,
     "executeStep",
     {
       description:
@@ -242,7 +285,8 @@ export function buildMcpServer(
   // run until `confirmed:true` — the agent TRIGGERS, the human hard-confirms, the
   // daemon EXECUTES with the stored creds. Returns names + status only, never values;
   // a blocked/needs-confirm/failure comes back as a typed, rendered state.
-  server.registerTool(
+  tool<{ id: string; confirmed?: boolean }>(
+    server,
     "executeAction",
     {
       description:

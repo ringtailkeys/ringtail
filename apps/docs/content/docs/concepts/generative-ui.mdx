@@ -1,0 +1,41 @@
+---
+title: Generative UI over MCP
+description: The agent supplies structured content through MCP; Ringtail owns every pixel.
+---
+
+The core principle: **the agent supplies structured content through MCP; Ringtail owns every
+pixel.**
+
+- The MCP schema is a **UI-component vocabulary** — `Wizard`, `Step`, `Action`, `Status`. The
+  agent fills typed slots; it never emits HTML, markdown, or CSS.
+- Each type maps 1:1 to a component in the `libs/ui` "Night Shift" design system, so agent
+  output is **on-brand by construction**.
+- Schema-validated data is **safe** (no injection) *and* **beautiful** (no ugly freeform
+  output). The constrained vocabulary is the moat for both quality and security.
+
+Agent = director (*what*); Ringtail = stage and actors (*pixels*). This is why the design
+system was built first: it's the render target.
+
+## The unified contract
+
+"Set up an unknown key" and "do this next action" are the **same structured thing**, rendered
+by one universal 1-2-3 wizard. A `Step` has one of four kinds:
+
+- `open-url` — Ringtail opens an allowlist-validated https provider deep-link.
+- `paste` — the value flows **user → Ringtail, never through the agent**. The agent authors
+  the step ("paste your Resend key, needs `sending` scope"); Ringtail collects, validates, and
+  stores. This is what keeps [the guarantee](/docs/concepts/the-guarantee) true even for
+  agent-generated wizards.
+- `auto` — a typed executor / API call, no human.
+- `confirm` — human approval; `destructive` steps are hard-gated, never one-click.
+
+The full TypeScript shapes are in the [contract reference](/docs/reference/contract).
+
+## The dashboard is a conversation
+
+The cockpit has a chat panel — you talk to the same agent that's driving everything. It
+**converses** (chat) and **renders** (grid, wizards, actions) over the same MCP connection:
+chat is the *direction* channel, the components are the *state* channel, one agent behind
+both. Steer the action list in plain language — "also set up Stripe", "skip the R2 bucket",
+"add a staging env" — and the agent re-maps and re-renders. Chat is about intent and actions,
+never secret values; paste-bypasses-the-agent still holds.

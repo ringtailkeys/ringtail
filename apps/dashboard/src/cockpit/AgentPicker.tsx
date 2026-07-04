@@ -11,19 +11,32 @@ import { fetchAgents, type DetectedAgent } from "../live";
  *
  * ponytail: shows detection + picker + copy-command (the load-bearing 90%). Headless
  * auto-spawn is a follow-up — the command is one paste away regardless.
+ *
+ * `onConnect` is step 1's commit: once you've picked an agent (and pasted its connect
+ * command), "Continue →" hands the id up so the daemon records it and the onboarding
+ * gate advances to step 2 (pick a project).
  */
-export function AgentPicker() {
-  const [agents, setAgents] = useState<DetectedAgent[] | null>(null);
+export function AgentPicker({
+  onConnect,
+  agents: seed,
+}: {
+  onConnect?: (id: string) => void;
+  /** Pre-seeded agents (Storybook/tests) — skips the live daemon fetch when provided. */
+  agents?: DetectedAgent[];
+}) {
+  const [agents, setAgents] = useState<DetectedAgent[] | null>(seed ?? null);
   const [picked, setPicked] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    void fetchAgents().then(setAgents);
-  }, []);
+    if (!seed) void fetchAgents().then(setAgents);
+  }, [seed]);
 
   if (!agents || agents.length === 0) return null; // daemon down → nothing to pick
   const installed = agents.filter((a) => a.present);
   const chosen = agents.find((a) => a.id === picked) ?? null;
+  // What "Continue" commits: a detected agent, or the guided/manual path.
+  const connectId = chosen?.id ?? (picked === "manual" ? "manual" : null);
 
   async function copy(text: string) {
     try {
@@ -116,9 +129,17 @@ export function AgentPicker() {
 
       {picked === "manual" && (
         <p style={{ fontFamily: font.mono, fontSize: 12, color: "var(--ink-soft)", marginTop: 12 }}>
-          Guided/manual: you drive the wizard yourself — paste keys below as the grid asks. No agent
+          Guided/manual: you drive the wizard yourself — paste keys as the grid asks. No agent
           required.
         </p>
+      )}
+
+      {connectId && onConnect && (
+        <div style={{ marginTop: 16 }}>
+          <Button variant="primary" onClick={() => onConnect(connectId)}>
+            Continue →
+          </Button>
+        </div>
       )}
     </section>
   );

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.next/
+.source/
+.env
+.env.local
+.env.*.local
+.nx/
+storybook-static/
+*.log
+*.tsbuildinfo
+.DS_Store
+.tilt/
+tilt_modules/

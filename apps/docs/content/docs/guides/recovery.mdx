@@ -1,0 +1,35 @@
+---
+title: Recovery
+description: A wrong scope or a failed action is a first-class state, not an exception. Ringtail explains it and routes to the fix.
+---
+
+Layer 4 is the promise that Ringtail never leaves you at a dead end. A wrong or expired key,
+an insufficient scope, or a failed action (API error, rate-limit, conflict) is a **first-class
+rendered state** — Ringtail catches it, explains it in plain language, and routes to the fix.
+
+## The failure cases and their fixes
+
+- **Bad or expired key** → re-paste / re-consent. The wizard re-opens the `paste` step.
+- **Insufficient scope** → the *exact* missing scope plus a deep-link (or the one box to tick).
+  This is the `wrong-scope` state: validation ran after mint, found a scope missing, and
+  refused to provision or sync a key that wouldn't work.
+- **Failed action** → retry, an alternative, or an agent-authored manual fallback. This is the
+  `failed` state.
+
+## The agent re-plans
+
+On failure the agent doesn't just report an error — it **re-plans**. It authors a recovery
+wizard or action from the error text plus live docs, and renders it into the cockpit. You see
+Rocco's error pose, a plain-language cause, and a next step. Every failure surfaces **a cause
+*and* a next step**.
+
+<Callout type="info">
+This is proven end-to-end offline: `bun run demo` drives a wrong-scope failure all the way
+through recovery to `synced` against the mock provider — no real cloud needed.
+</Callout>
+
+## The states you'll see on a cell
+
+`missing` · `needs-consent` · `validating` · `validated` · `wrong-scope` · `provisioning` ·
+`synced` · `failed`. Recovery is what moves a cell out of `wrong-scope` or `failed` and back
+onto the path to `synced`.

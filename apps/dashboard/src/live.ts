@@ -86,6 +86,49 @@ export async function fetchAgents(): Promise<DetectedAgent[]> {
   }
 }
 
+/** Step 1: commit the connected agent to daemon state (id → advances to step 2).
+ * Pass null to disconnect (falls the gate back to step 1). */
+export async function setAgent(id: string | null): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/agent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id }),
+  });
+  if (!res.ok) throw new Error(`setAgent failed: ${res.status}`);
+}
+
+export interface ProjectCandidate {
+  path: string;
+  name: string;
+  hasEnvExample: boolean;
+}
+
+/** Step 2: local dirs with a `.env.example` (names/paths only; empty if daemon down). */
+export async function fetchProjects(): Promise<ProjectCandidate[]> {
+  try {
+    const token = await ensureToken();
+    const res = await fetch(`${DAEMON_URL}/api/projects`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return ((await res.json()) as { projects: ProjectCandidate[] }).projects;
+  } catch {
+    return [];
+  }
+}
+
+/** Step 2: set the active project by path (daemon rebuilds the grid from its
+ * `.env.example` → advances to the cockpit). Pass null to clear (back to step 2). */
+export async function setProject(path: string | null): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(`setProject failed: ${res.status}`);
+}
+
 /** Subscribe to live daemon state. Returns an unsubscribe fn. Calls onDown once if
  * the daemon can't be reached (session fetch or SSE fails) → render fixtures. */
 export function subscribeLive(
@@ -130,5 +173,5 @@ export function fixtureSnapshot(): DaemonSnapshot {
       prod: p.envs.prod,
     },
   }));
-  return { grid, wizard: null, actions: [], chat: [] };
+  return { grid, wizard: null, actions: [], chat: [], agent: null, project: null };
 }
