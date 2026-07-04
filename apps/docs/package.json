@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --port ${PORT:-4882}",
     "build": "NEXT_TELEMETRY_DISABLED=1 fumadocs-mdx && NEXT_TELEMETRY_DISABLED=1 next build",
-    "start": "NEXT_TELEMETRY_DISABLED=1 next start",
-    "typecheck": "fumadocs-mdx && tsc --noEmit -p tsconfig.typecheck.json"
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start"
   },
+  "//": "No `typecheck` target on purpose: apps/docs is type-gated by `next build` (the check:docs CI job) — a separate tsc over the Next+Fumadocs type graph is redundant, slow, and OOMs.",
   "dependencies": {
     "fumadocs-core": "15.8.5",
     "fumadocs-ui": "15.8.5",

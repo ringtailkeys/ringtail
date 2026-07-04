@@ -13,6 +13,10 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # apps/docs (Next + React + Fumadocs types) makes tsc heavy; raise the heap so
+    # typecheck/lint don't OOM (default Node old-space is too small for it).
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
     steps:
       - uses: actions/checkout@v4
 
