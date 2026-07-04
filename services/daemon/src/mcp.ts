@@ -1,12 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  ActionSchema,
-  GRID_ENVS,
-  provisionCredential,
-  WizardSchema,
-  type Environment,
-} from "@ringtail/core";
+import { ActionSchema, GRID_ENVS, WizardSchema } from "@ringtail/core";
 import { z } from "zod";
+import { runAction, runEngine } from "./action";
 import { applyStep } from "./submit";
 import type { DaemonStore } from "./state";
 
@@ -42,7 +37,6 @@ const CREDENTIAL_STATUS = z.enum([
  * deployed envs are Infisical-only. The mock `dev` run is what writes .env.local,
  * so it backs the `local` cell (see runEngine). */
 const GRID_ENV = z.enum(GRID_ENVS);
-const DEPLOYED_ENVS: Environment[] = ["dev", "staging", "prod"];
 
 /** Wrap any value-free result as an MCP text content block (client JSON-parses it).
  * ponytail: text-content JSON over an outputSchema — one line, no schema plumbing,
@@ -57,48 +51,9 @@ export function buildMcpServer(
 ): McpServer {
   const server = new McpServer({ name: "ringtail", version: "0.2.0" });
 
-  // A typed failure the tool returns on wrong-scope / failed — the recovery hook the
-  // agent re-plans from. Names + a plain-language reason + the exact missing scope(s);
-  // NEVER a secret value (leak-guarded).
-  type EngineFailure = {
-    env: string;
-    status: "wrong-scope" | "failed";
-    reason?: string;
-    missing: string[];
-  };
-
-  // Drive the mock engine across the deployed envs; flip grid cells as it goes.
-  // dev's .env.local write also backs the `local` column (local → .env.local).
-  // Short-circuits on the first wrong-scope/failed env → returns a typed failure so
-  // the agent can author a recovery wizard (Layer 4, never a dead end).
-  // ponytail: the mock-spine seam — RINGTAIL_MOCK_RECIPE picks which fake recipe this
-  // run exercises (mock · mock-badscope · mock-failprovision). The real build maps the
-  // provider → its recipe; here the driver/tests flip it to prove recovery offline.
-  const runEngine = async (provider: string) => {
-    const recipeId = process.env.RINGTAIL_MOCK_RECIPE ?? "mock";
-    const results: Array<{ env: string; status: string; keys: string[] }> = [];
-    for (const env of DEPLOYED_ENVS) {
-      store.setCell(provider, env, "provisioning");
-      const report = await provisionCredential(recipeId, {
-        env,
-        repoName: opts.repoName,
-        envLocalPath: opts.envLocalPath,
-      });
-      store.setCell(provider, env, report.status);
-      if (report.wroteLocal) store.setCell(provider, "local", report.status);
-      results.push({ env, status: report.status, keys: report.keys }); // NAMES only
-      if (report.status === "wrong-scope" || report.status === "failed") {
-        const failure: EngineFailure = {
-          env,
-          status: report.status,
-          reason: report.reason,
-          missing: report.missing,
-        };
-        return { results, failure };
-      }
-    }
-    return { results, failure: null as EngineFailure | null };
-  };
+  // The execute side (runEngine / runAction) lives in ./action, shared with the
+  // browser approve route so every execution routes through ONE set of gates.
+  const engineOpts = { repoName: opts.repoName, envLocalPath: opts.envLocalPath };
 
   // plan() → the live grid (providers × local/dev/staging/prod). Names + status.
   server.registerTool(
@@ -143,6 +98,36 @@ export function buildMcpServer(
     async ({ actions }) => {
       store.setActions(actions);
       return ok({ actions: actions.map((a) => ({ id: a.id, title: a.title, danger: a.danger })) });
+    },
+  );
+
+  // mapActions(actions) → the LAYER-2 map entry (architecture.md §"Map the actions").
+  // The agent maps the repo-specific + cross-tool next steps now possible (domain→CF,
+  // Infisical→CF binding, a Neon branch per env, the R2 bucket your code references)
+  // and submits them here. Each Action is zod-validated (ActionSchema, wizard nested)
+  // → malformed is REJECTED at the boundary; the daemon stores them as the living
+  // action panel and echoes back the validated set (names/intent + prerequisites +
+  // danger + executor). NEVER a secret value. renderActions is the directable re-render;
+  // mapActions is the initial map that returns the full validated Action[].
+  server.registerTool(
+    "mapActions",
+    {
+      description:
+        "Map the repo-specific + cross-tool next steps into the actions panel. Each Action is schema-validated (malformed rejected). Returns the validated Action[] (names + prerequisites + danger + executor), never values.",
+      inputSchema: { actions: z.array(ActionSchema) },
+    },
+    async ({ actions }) => {
+      store.setActions(actions);
+      return ok({
+        actions: actions.map((a) => ({
+          id: a.id,
+          title: a.title,
+          why: a.why,
+          prerequisites: a.prerequisites,
+          danger: a.danger,
+          executor: a.executor,
+        })),
+      });
     },
   );
 
@@ -212,7 +197,7 @@ export function buildMcpServer(
     async ({ stepId }) => {
       store.markStep(stepId, "active");
       const provider = store.snapshot().wizard?.provider ?? "mock";
-      const { results, failure } = await runEngine(provider);
+      const { results, failure } = await runEngine(store, provider, engineOpts);
       // Failure is a rendered state, not a thrown error: mark the step `failed` so the
       // wizard shows it (Rocco error pose), and hand the agent the reason to re-plan.
       store.markStep(stepId, failure ? "failed" : "done");
@@ -220,21 +205,19 @@ export function buildMcpServer(
     },
   );
 
-  // executeAction(id) → drive a mapped action's wizard through the same executor.
+  // executeAction(id, confirmed?) → run a mapped action through the gates (prereqs →
+  // hard-confirm → dispatch). A `destructive` action (domain→CF NS swap) refuses to
+  // run until `confirmed:true` — the agent TRIGGERS, the human hard-confirms, the
+  // daemon EXECUTES with the stored creds. Returns names + status only, never values;
+  // a blocked/needs-confirm/failure comes back as a typed, rendered state.
   server.registerTool(
     "executeAction",
     {
       description:
-        "Run a mapped action (its embedded wizard's provisioning). Returns status + key names, never values. On failure returns a typed recovery hook (reason + missing scope).",
-      inputSchema: { id: z.string().min(1) },
+        "Run a mapped action (typed executor or its wizard's provisioning) with the stored creds. A destructive action is refused unless confirmed:true (hard-confirm, never one-click). Returns status + key names, never values.",
+      inputSchema: { id: z.string().min(1), confirmed: z.boolean().optional() },
     },
-    async ({ id }) => {
-      const action = store.snapshot().actions.find((a) => a.id === id);
-      if (!action) throw new Error(`unknown action: ${id}`);
-      const provider = action.wizard.provider ?? "mock";
-      const { results, failure } = await runEngine(provider);
-      return ok({ id, provider, results, failure });
-    },
+    async ({ id, confirmed }) => ok(await runAction(store, id, { ...engineOpts, confirmed })),
   );
 
   return server;

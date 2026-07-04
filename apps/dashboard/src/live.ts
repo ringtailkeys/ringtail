@@ -52,6 +52,20 @@ export async function sendChat(text: string): Promise<void> {
   if (!res.ok) throw new Error(`sendChat failed: ${res.status}`);
 }
 
+/** The BROWSER approve path for a mapped action: POST id (+ confirmed for a
+ * destructive one that cleared the two-step gate) → daemon runs it with the stored
+ * creds. Returns the value-free run result; throws on transport failure. */
+export async function approveAction(id: string, confirmed?: boolean): Promise<unknown> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ id, confirmed }),
+  });
+  if (!res.ok) throw new Error(`approveAction failed: ${res.status}`);
+  return res.json();
+}
+
 export interface DetectedAgent {
   id: string;
   name: string;

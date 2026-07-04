@@ -19,6 +19,6 @@ export { Spinner, Skeleton, feedbackKeyframes } from "./feedback";
 export { Modal, modalKeyframes } from "./modal";
 export { StatusChip, StatusDot, STATUS, statusKeyframes, type CredentialStatus } from "./status";
 export { ChatPanel, type ChatLine } from "./chat";
-export { ActionsPanel, type ActionItem } from "./actions";
+export { ActionsPanel, type ActionItem, type ApproveFn } from "./actions";
 export { Rocco, roccoLine, type RoccoPose } from "./rocco";
 export { allKeyframes } from "./keyframes";

@@ -258,6 +258,65 @@ async function main(): Promise<void> {
     );
     if (fixed.failure || !neonSynced) throw new Error("recovery did not reach synced");
     console.log("\n✓ Layer 4 proven: wrong-scope caught → recovery wizard → re-do → synced.\n");
+
+    // ── P4 · the actions layer (repo-specific + cross-tool next steps) ────────
+    // With cloudflare connected, map the cross-tool next steps and run the first
+    // typed executor: domain→CF (point the domain's nameservers at Cloudflare).
+    // It's DESTRUCTIVE (an NS swap cuts over live DNS) → the daemon HARD-CONFIRMS:
+    // executeAction without confirmed returns needsConfirm and does NOT run; only a
+    // confirmed call executes. The agent triggers; the daemon executes (mock).
+    console.log("── ringtail P4 · actions layer (map → approve → confirm → execute) ──");
+
+    const DOMAIN_TO_CF = {
+      id: "domain-to-cf",
+      title: "Point krispy.ai at Cloudflare",
+      why: "Your app deploys to CF Pages — make Cloudflare authoritative for DNS.",
+      prerequisites: ["cloudflare"],
+      danger: "destructive" as const,
+      executor: "domain-to-cf",
+      wizard: {
+        id: "wiz-domain-cf",
+        title: "Point the domain at Cloudflare",
+        provider: "cloudflare",
+        steps: [
+          {
+            id: "dcf-confirm",
+            title: "Swap nameservers to Cloudflare",
+            description: "Destructive — cuts over live DNS. Requires explicit confirm.",
+            kind: "confirm" as const,
+            danger: "destructive" as const,
+            status: "pending" as const,
+          },
+        ],
+      },
+    };
+
+    console.log("\n[P1] mapActions([domain-to-cf]) — the cross-tool next step, validated:");
+    const mapped = await call("mapActions", { actions: [DOMAIN_TO_CF] });
+    for (const a of mapped.actions as Array<{ id: string; danger: string; executor?: string }>) {
+      console.log(`  ${a.id}  danger=${a.danger}  executor=${a.executor ?? "(wizard)"}`);
+    }
+    if (!mapped.actions?.some((a: { id: string }) => a.id === "domain-to-cf")) {
+      throw new Error("P4: mapActions did not store the domain-to-cf action");
+    }
+
+    console.log("\n[P2] executeAction(domain-to-cf) — no confirm → HARD-CONFIRM gate holds:");
+    const gate = await call("executeAction", { id: "domain-to-cf" });
+    console.log(`  → needsConfirm=${gate.needsConfirm}  (not executed — destructive)`);
+    if (gate.needsConfirm !== true || gate.result) {
+      throw new Error("P4: destructive action ran WITHOUT confirmation (hard-confirm broken)");
+    }
+
+    console.log("\n[P3] executeAction(domain-to-cf, confirmed) — the human confirms → executes:");
+    const done = await call("executeAction", { id: "domain-to-cf", confirmed: true });
+    console.log(`  → status=${done.result?.status}  ${done.result?.detail}`);
+    for (const ch of (done.result?.changes ?? []) as Array<{ field: string; to: string }>) {
+      console.log(`     ${ch.field} → ${ch.to}`);
+    }
+    if (done.result?.status !== "done" || !done.result?.changes?.[0]?.to?.includes("cloudflare")) {
+      throw new Error("P4: confirmed domain→CF did not execute to done with the CF nameservers");
+    }
+    console.log("\n✓ P4 proven: map → approve → hard-confirm → typed executor ran (mock).\n");
   } finally {
     await client.close();
     await server.stop(true);

@@ -14,7 +14,7 @@ import roccoChill from "../../.brand-assets/rocco-chill.png";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { WizardModal } from "./cockpit/WizardModal";
-import { fixtureSnapshot, sendChat, submitStep, subscribeLive } from "./live";
+import { approveAction, fixtureSnapshot, sendChat, submitStep, subscribeLive } from "./live";
 
 /**
  * The LOCAL cockpit — now wired LIVE. It subscribes to the daemon's SSE state
@@ -69,7 +69,10 @@ export function App() {
               alignItems: "start",
             }}
           >
-            <ActionsPanel actions={snapshot.actions} />
+            <ActionsPanel
+              actions={snapshot.actions}
+              onApprove={live ? (id, confirmed) => void approveAction(id, confirmed) : undefined}
+            />
             <ChatPanel
               messages={snapshot.chat}
               onSend={live ? sendChat : undefined}

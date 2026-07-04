@@ -56,6 +56,11 @@ export const ActionSchema = z.object({
   why: z.string(),
   prerequisites: z.array(z.string()),
   danger: DangerSchema,
+  // Optional dispatch key for a repo-specific / cross-tool TYPED executor (e.g.
+  // "domain-to-cf"). When set + known, the daemon runs that executor with the
+  // stored root creds; when absent, the action falls back to its wizard's
+  // provisioning loop. Names/intent only — an executor NEVER returns a secret value.
+  executor: z.string().optional(),
   wizard: WizardSchema,
 });
 export type Action = z.infer<typeof ActionSchema>;

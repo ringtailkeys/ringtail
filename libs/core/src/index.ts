@@ -10,6 +10,8 @@ export type { Environment } from "@ringtail/sinks";
 // The generative-UI contract (Wizard/Step/Action + the env axis) — the surface
 // the daemon validates and the dashboard renders. Re-exported through the public door.
 export * from "./wizard";
+// Typed cross-tool action executors (layer 2) — domain→CF + the dispatch registry.
+export * from "./actions";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
 export { startMockProvider, type MockProvider } from "./mock-provider";
 

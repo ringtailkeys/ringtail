@@ -3,6 +3,7 @@ import { getEnv } from "@ringtail/config";
 import { connectionMap, defaultEnvironment, provisionCredential } from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
+import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
 import { DaemonStore } from "./state";
@@ -116,6 +117,27 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (!text) return c.json({ error: "text required" }, 400);
     store.postUserMessage(text);
     return c.json({ ok: true });
+  });
+
+  // POST /api/action — the BROWSER approve path for a mapped action (the "Next steps"
+  // panel). Shares runAction with the MCP executeAction tool, so the SAME gates apply:
+  // prerequisites, and the hard-confirm for `destructive` (the panel sends
+  // confirmed:true only after the user clears the two-step destructive gate). The
+  // daemon executes with the stored creds and returns status/names, never values.
+  app.post("/api/action", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { id?: string; confirmed?: boolean };
+    if (!body.id) return c.json({ error: "id required" }, 400);
+    try {
+      const result = await runAction(store, body.id, {
+        repoName: opts.repoName ?? "ringtail",
+        envLocalPath: opts.envLocalPath,
+        confirmed: body.confirmed,
+      });
+      return c.json(result);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
   });
 
   // GET /api/agents — detected coding-agent CLIs on PATH + the exact MCP-connect
