@@ -106,12 +106,15 @@ Before asking, scan **known** credential stores (`.env.local`, `~/.ringtail`, `~
 6. **Zero telemetry.** No analytics, no phone-home, ever.
 
 ## Roadmap
-- **P0** — this doc.
-- **P1** — `local` column + sink routing.
-- **P2 ⭐** — the agent-drives-it spine *against the mock*: daemon MCP-over-HTTP + token, the tools above, the **universal wizard renderer** + check-off streaming, the agent picker, dashboard wired live (SSE). Proves the whole UX with zero real cloud.
-- **P3** — real provider: Cloudflare (flesh out `TODO(c7)`, device-flow consent, validate-after-mint against a real account). The krispyai dogfood.
-- **P4** — the actions panel + first executor (domain→CF, hard-confirm).
-- **P5** — local discovery + the rest of krispyai's stack.
+- **P0 — DONE.** This doc; the pin the build is verified against.
+- **P1 — DONE.** `local` column + env-axis sink routing (`local → .env.local`, `dev/staging/prod → Infisical`) in `libs/sinks`; `syncCredential` fans one key out per env. Covered by `libs/core` e2e (real `.env.local`, per-env Infisical, byte-identical idempotent re-run).
+- **P2 ⭐ — DONE.** The agent-drives-it spine against the mock: daemon MCP-over-HTTP + session token (`services/daemon`, `@modelcontextprotocol/sdk`), the tool surface (`plan`/`renderWizard`/`updateStatus`/`submitStep`/`executeStep`/`executeAction`), the universal wizard renderer + check-off streaming (SSE `/events` + live `DaemonStore`), agent picker, dashboard wired live. `bun run demo` drives the full loop to **synced** with zero real cloud.
+- **P3 — DONE (code; live-run pending).** Cloudflare recipe is real (deep-link consent + validate-**after**-mint that catches wrong-scope and refuses to provision/sync). The one honest gap: **a real Cloudflare live run needs a real CF account** — the mint→validate path is exercised against the mock provider, not yet a live token. That's a human step, not a code gap.
+- **P4 — DONE.** Actions panel + first executor: `mapActions` → validated `Action[]`, `domain→CF` typed executor with a **hard-confirm** gate (destructive, never one-click). `bun run demo` proves map → approve → confirm → execute (mock).
+- **P5 — DONE.** Local credential discovery (`~/.ringtail`/`.env.local`/known stores, names + source only, reuse complete root grants) + `authorWizard` universal fallback for the long tail. Krispyai's fuller stack still onboards recipe-by-recipe.
+- **THE GUARANTEE — DONE + CI-gated.** No MCP tool returns a value; `paste` flows user → daemon → `libs/store`, never into the snapshot/SSE/any response (`submit.ts`). Enforced by `check:no-leak` (static + runtime + e2e) as a build gate. Zero telemetry SDK in the tree (verified by grep).
+- **Recovery (Layer 4) — DONE.** Wrong-scope / failed-action are first-class rendered states (`wrong-scope`/`failed` chips); the agent re-plans into a recovery wizard. Proven end-to-end in `bun run demo` (wrong-scope → recovery → synced) and `libs/core` tests.
+- **Chat — DONE.** Dashboard chat panel over the same MCP connection (agent converses + renders); `agentSay`/`pollChat` relay is intent-only, never a value (`state.ts`). `bun run demo:chat` exercises it.
 
 ## Fits the ecosystem
 - Ships as a **Delulus "Provision your stack" Move** (Navigator triggers it via MCP; consent = a Loop human-handoff; status back, never values).
