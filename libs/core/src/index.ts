@@ -282,6 +282,43 @@ export function readPlan(
 }
 
 /**
+ * Build the live cockpit grid from A CHOSEN project's `.env.example` (step 2 of the
+ * onboarding flow). Ringtail is project-scoped: the picked project's manifest — not
+ * the built-in recipe registry — defines the rows. Each `# ── Section ──` becomes a
+ * provider row; the vars under it are its env-var names; a cell is `validated` when
+ * every var in the section is already present in the live env, else `missing`. Names
+ * only — the RHS in `.env.example` holds no values, so nothing secret is ever read.
+ * Empty/missing file → empty grid.
+ */
+export function gridFromExample(
+  examplePath: string,
+  env: Record<string, string | undefined> = process.env,
+): GridRow[] {
+  const order: string[] = [];
+  const bySection = new Map<string, PlanEntry[]>();
+  for (const entry of readPlan(examplePath, env)) {
+    const section = entry.section || "other";
+    if (!bySection.has(section)) {
+      bySection.set(section, []);
+      order.push(section);
+    }
+    bySection.get(section)?.push(entry);
+  }
+  return order.map((section) => {
+    const es = bySection.get(section) ?? [];
+    const status: CredentialStatus = es.every((e) => e.present) ? "validated" : "missing";
+    return {
+      provider: section,
+      envVars: es.map((e) => e.key),
+      envs: Object.fromEntries(GRID_ENVS.map((e) => [e, status])) as Record<
+        GridEnv,
+        CredentialStatus
+      >,
+    };
+  });
+}
+
+/**
  * The gap per environment: the manifest read once, then projected onto each of
  * {dev,staging,prod}. The store is machine-global today, so the gap is the same
  * across envs — but the shape is honest to the per-env model the sinks target.

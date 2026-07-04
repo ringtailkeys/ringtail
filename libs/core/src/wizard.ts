@@ -109,16 +109,35 @@ export const ChatMessageSchema = z.object({
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
+/** The coding agent the founder connected in step 1 (names only, never a token). */
+export interface SelectedAgent {
+  id: string;
+  name: string;
+}
+
+/** The local project chosen in step 2 — Ringtail reads its `.env.example` as the
+ * manifest. Path + name only; no file contents, no secrets. */
+export interface ActiveProject {
+  path: string;
+  name: string;
+}
+
 /**
  * The whole live daemon state, streamed to the dashboard over SSE. ONE source of
  * truth: MCP tool calls mutate it → the daemon pushes this snapshot → the cockpit
  * re-renders. Value-free by construction (grid = statuses, wizard = names + kinds,
  * chat = intent text). The agent both converses (chat) and renders (grid/wizard/
  * actions) over the same MCP connection — the dashboard is a conversation, not a board.
+ *
+ * `agent` + `project` drive the onboarding gate: no agent → step 1 (connect); agent
+ * but no project → step 2 (pick project); both → step 3 (the cockpit). Persisted here
+ * so a dashboard reload restores the right step off the primed SSE snapshot.
  */
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
   actions: Action[];
   chat: ChatMessage[];
+  agent: SelectedAgent | null;
+  project: ActiveProject | null;
 }
