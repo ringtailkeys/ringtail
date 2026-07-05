@@ -1,4 +1,4 @@
-import type { Wizard } from "@ringtail/core";
+import type { Step, Wizard } from "@ringtail/core";
 import type { Meta, StoryObj } from "@storybook/react";
 import { WizardModal } from "./WizardModal";
 
@@ -17,47 +17,47 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 // A fresh Cloudflare raid: open the token page, paste it back, Ringtail syncs.
+const OPEN_URL: Step = {
+  id: "s1",
+  title: "Open the token page",
+  description: "Rocco needs you to authorize once — the only human step.",
+  kind: "open-url",
+  payload: {
+    url: "https://dash.cloudflare.com/profile/api-tokens",
+    scopes: ["Zone:Read", "DNS:Edit"],
+  },
+  status: "active",
+};
+const PASTE: Step = {
+  id: "s2",
+  title: "Paste the token",
+  description: "It goes straight to Ringtail — the agent never sees it.",
+  kind: "paste",
+  payload: { varName: "CLOUDFLARE_API_TOKEN" },
+  status: "pending",
+};
+const SYNC: Step = {
+  id: "s3",
+  title: "Validate scope + sync",
+  description: "Ringtail checks the scope and stashes it in .env.local.",
+  kind: "auto",
+  status: "pending",
+};
+
 const FRESH: Wizard = {
   id: "cf-raid",
   title: "Raid Cloudflare",
   provider: "Cloudflare",
-  steps: [
-    {
-      id: "s1",
-      title: "Open the token page",
-      description: "Rocco needs you to authorize once — the only human step.",
-      kind: "open-url",
-      payload: {
-        url: "https://dash.cloudflare.com/profile/api-tokens",
-        scopes: ["Zone:Read", "DNS:Edit"],
-      },
-      status: "active",
-    },
-    {
-      id: "s2",
-      title: "Paste the token",
-      description: "It goes straight to Ringtail — the agent never sees it.",
-      kind: "paste",
-      payload: { varName: "CLOUDFLARE_API_TOKEN" },
-      status: "pending",
-    },
-    {
-      id: "s3",
-      title: "Validate scope + sync",
-      description: "Ringtail checks the scope and stashes it in .env.local.",
-      kind: "auto",
-      status: "pending",
-    },
-  ],
+  steps: [OPEN_URL, PASTE, SYNC],
 };
 
 // Mid-raid — step 1 done, paste active, sync waiting.
 const IN_PROGRESS: Wizard = {
   ...FRESH,
   steps: [
-    { ...FRESH.steps[0]!, status: "done" },
-    { ...FRESH.steps[1]!, status: "active" },
-    { ...FRESH.steps[2]!, status: "pending" },
+    { ...OPEN_URL, status: "done" },
+    { ...PASTE, status: "active" },
+    { ...SYNC, status: "pending" },
   ],
 };
 
@@ -65,11 +65,10 @@ const IN_PROGRESS: Wizard = {
 const RECOVERY: Wizard = {
   ...FRESH,
   steps: [
-    { ...FRESH.steps[0]!, status: "done" },
-    { ...FRESH.steps[1]!, status: "done" },
+    { ...OPEN_URL, status: "done" },
+    { ...PASTE, status: "done" },
     {
-      ...FRESH.steps[2]!,
-      title: "Validate scope + sync",
+      ...SYNC,
       description: "Token is missing DNS:Edit — re-issue it with the DNS scope ticked.",
       status: "failed",
     },
