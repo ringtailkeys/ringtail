@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Ringtail native shell — core window/menu/tray defaults + permission to spawn the bundled daemon sidecar (loopback only). No remote fetch, no fs, no arbitrary shell.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/ringtaild", "sidecar": true, "args": true }]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/ringtaild", "sidecar": true, "args": true }]
+    },
+    "shell:allow-kill"
+  ]
+}
