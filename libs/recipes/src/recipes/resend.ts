@@ -27,7 +27,9 @@ export const recipe: Recipe = {
 
     let res: Response;
     try {
-      // TODO(c7): current scopes/token-URL via Context7 at runtime
+      // Resend: Authorization: Bearer re_…; a full-access key lists /domains (200),
+      // a send-only key 401s here → we report that honestly below. There is no
+      // token-returning list endpoint. (resend.com/docs/api-reference, verified 2026-07)
       res = await fetch("https://api.resend.com/domains", {
         headers: { Authorization: `Bearer ${key}` },
       });

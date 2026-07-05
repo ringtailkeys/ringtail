@@ -14,7 +14,8 @@ async function safeGet(
   token: string,
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   try {
-    // TODO(c7): current scopes/token-URL via Context7 at runtime
+    // Neon API v2: Authorization: Bearer <NEON_API_KEY>; invalid/revoked → 401.
+    // (api-docs.neon.tech/reference/authentication, verified 2026-07)
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     });
@@ -36,7 +37,6 @@ async function safePost(
   payload: unknown,
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   try {
-    // TODO(c7): current scopes/token-URL via Context7 at runtime
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

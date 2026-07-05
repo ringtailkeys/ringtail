@@ -41,9 +41,28 @@ export async function submitStep(stepId: string, value?: string): Promise<{ stat
   return (await res.json()) as { status: string };
 }
 
+/** The DASHBOARD root-key intake: POST a per-account MASTER key user → daemon
+ * (never through the agent), stored in the global ~/.ringtail vault. Same trust
+ * path as a paste. Returns the value-free result ({ providerAccount, roots }) — the
+ * NAMES of accounts we now hold a root for, never a value; throws on transport failure. */
+export async function submitRoot(
+  providerAccount: string,
+  value: string,
+): Promise<{ providerAccount: string; roots: string[] }> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/root`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ providerAccount, value }),
+  });
+  if (!res.ok) throw new Error(`submitRoot failed: ${res.status}`);
+  return (await res.json()) as { providerAccount: string; roots: string[] };
+}
+
 /** The user → agent direction channel: POST the chat text to the daemon, which
  * appends it to the transcript (renders at once over SSE) and queues it for the
- * agent to drain (pollChat). Intent text only — never a secret value. */
+ * agent (delivered as pendingUserMessages on its next tool call). Intent text only —
+ * never a secret value. */
 export async function sendChat(text: string): Promise<void> {
   const token = await ensureToken();
   const res = await fetch(`${DAEMON_URL}/api/chat`, {

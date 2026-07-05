@@ -32,6 +32,9 @@ export interface MockCalls {
   provision: Array<{ repoName: string }>;
   /** One entry per Infisical secret-upsert — the assertion target for "called per-env". */
   infisical: Array<{ env: string; keys: string[] }>;
+  /** Every `Authorization` header the fake received — lets the generic-executor e2e
+   * assert the root key was substituted into `{{ROOT}}` and reached the allowlisted host. */
+  authSeen: string[];
 }
 
 export interface MockProvider {
@@ -42,7 +45,13 @@ export interface MockProvider {
 
 /** Boot the fake on an ephemeral port. Call stop() when done. */
 export function startMockProvider(): MockProvider {
-  const calls: MockCalls = { oauthToken: [], validate: [], provision: [], infisical: [] };
+  const calls: MockCalls = {
+    oauthToken: [],
+    validate: [],
+    provision: [],
+    infisical: [],
+    authSeen: [],
+  };
 
   const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), {
@@ -54,6 +63,8 @@ export function startMockProvider(): MockProvider {
     port: 0,
     async fetch(req) {
       const { pathname } = new URL(req.url);
+      const auth = req.headers.get("authorization");
+      if (auth) calls.authSeen.push(auth);
       const body = req.method === "POST" ? ((await req.json()) as Record<string, unknown>) : {};
 
       switch (pathname) {

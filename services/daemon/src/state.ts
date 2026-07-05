@@ -31,9 +31,9 @@ export class DaemonStore {
   #wizard: Wizard | null = null;
   #actions: Action[] = [];
   #chat: ChatMessage[] = [];
-  /** user → agent queue: messages the user typed, waiting for the agent to drain
-   * (pollChat). The transcript (#chat) is display; this is delivery. Value-free —
-   * intent text only, same as #chat. */
+  /** user → agent queue: messages the user typed, waiting to ride back to the agent
+   * as `pendingUserMessages` on its next tool call (drainInbox). The transcript (#chat)
+   * is display; this is delivery. Value-free — intent text only, same as #chat. */
   #inbox: string[] = [];
   /** Onboarding gate state (architecture.md §"Entry & agent selection"): the agent
    * connected in step 1 + the project chosen in step 2. Names/paths only, no secrets.
@@ -154,14 +154,16 @@ export class DaemonStore {
   }
 
   /** User → agent (POST /api/chat). Appends to the transcript (so it renders at once)
-   * AND queues it for the agent to drain via pollChat. Intent text only, never a value. */
+   * AND queues it for the agent, delivered as `pendingUserMessages` on its next tool
+   * call (drainInbox). Intent text only, never a value. */
   postUserMessage(text: string): void {
     this.#chat.push({ role: "user", text, ts: Date.now() });
     this.#inbox.push(text);
     this.#emit();
   }
 
-  /** The agent drains pending user direction (pollChat). Returns + clears the inbox. */
+  /** Drain pending user direction → `pendingUserMessages` on the agent's next tool
+   * call (plan/executeStep/updateStatus/authorWizard). Returns + clears the inbox. */
   drainInbox(): string[] {
     const pending = this.#inbox;
     this.#inbox = [];

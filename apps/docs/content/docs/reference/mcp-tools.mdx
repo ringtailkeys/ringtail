@@ -11,7 +11,8 @@ value** — that is enforced by `check:no-leak`.
 ## Plan & status
 
 - **`plan()` → `Status[]`** — scan the manifest + connected state → the grid (providers ×
-  `local/dev/staging/prod`). Emits key **names** and status, never values.
+  `local/dev/staging/prod`). Emits key **names** and status, never values. Also carries
+  `pendingUserMessages` — see [Chat](#chat-the-direction-channel).
 - **`updateStatus(provider, env, status)`** — flip one grid cell to a credential status.
 
 ## Author & render the UI
@@ -30,19 +31,35 @@ value** — that is enforced by `check:no-leak`.
 
 - **`submitStep(stepId, value?)`** — the **one** inbound value path. For a `paste` step the
   value flows user → daemon (validated + stored) and is **never echoed back**. Returns status +
-  var name only.
+  var name only. When the next step is a safe `auto` step, the daemon **auto-advances** it
+  (mint → validate-after-mint → provision → sync) with no agent round-trip — the result carries
+  the value-free `autoAdvanced` outcome.
 - **`executeStep(stepId)`** — the daemon runs the provisioning loop (mint → validate-after-mint
   → provision → sync) with the stored creds. Returns status + key names.
 - **`executeAction(id, confirmed?)`** — run a mapped action through the gates (prereqs →
   hard-confirm → dispatch). A `destructive` action is refused unless `confirmed: true`. Returns
   status + key names.
+- **`mintKey(action, env?)`** — the **generic dynamic executor**. The agent authors
+  an HTTP action inline — `{ providerAccount, method, url, headers (with a `{{ROOT}}` placeholder),
+  body?, extract? }` — and the daemon resolves the root key from the global vault, **enforces the
+  domain allowlist** (a non-allowlisted host is rejected before any HTTP; redirects off the
+  allowlisted host are refused, not followed), runs the call, and — if `extract` names a minted
+  secret — files it in the sink under `ringtail/<repo>/<env>/<provider>` naming. One path covers
+  **mint**, read-only **permission-check** (no `extract`), and cross-provider **wire**. A
+  consequential action (e.g. a `DELETE` that spends the root key destructively) comes back
+  `needs-confirm` — the agent gets **no** `confirmed` argument, so it can never self-approve; a
+  human confirms out-of-band. Returns `{ providerAccount, varName?, status, reason? }` — **never a
+  value** (root or minted; any reflected secret is scrubbed from `reason`). The root key itself is
+  pasted by the user via `POST /api/root`, never through the agent.
 
 ## Chat (the direction channel)
 
 - **`sendChat(message, choices?)`** — agent → user in the dashboard chat, optionally with
   tappable choice pills. Text/intent only, never a value.
-- **`pollChat()`** — drain pending user chat (user → agent) to act on, then re-render
-  actions/wizards to match.
+- **User → agent is event-driven (no poll tool).** A message the user types (`POST /api/chat`)
+  is queued and delivered as **`pendingUserMessages: string[]`** on the return of the agent's
+  next `plan` / `executeStep` / `updateStatus` / `authorWizard` call — intent text only, never a
+  value. The agent re-renders actions/wizards to match on its next natural tool call.
 
 <Callout type="warn">
 Notice what's absent: there is no `getSecret`, no `readValue`, no tool that hands the agent a

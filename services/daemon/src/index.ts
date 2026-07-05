@@ -13,6 +13,7 @@ import {
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
+import { listRootAccounts, putRoot } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import { buildMcpServer } from "./mcp";
@@ -134,16 +135,42 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     const body = (await c.req.json().catch(() => ({}))) as { stepId?: string; value?: string };
     if (!body.stepId) return c.json({ error: "stepId required" }, 400);
     try {
-      return c.json(applyStep(store, body.stepId, body.value));
+      // Pass engine opts so a paste auto-advances the next safe auto step (event-driven).
+      return c.json(
+        await applyStep(store, body.stepId, body.value, {
+          repoName: opts.repoName ?? "ringtail",
+          envLocalPath: opts.envLocalPath,
+        }),
+      );
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
   });
 
+  // POST /api/root — the DASHBOARD submits a per-account ROOT key (the master key
+  // that MINTS other keys). Same trust path as a paste: user → daemon → the global
+  // ~/.ringtail vault; the AGENT never submits or sees a root key. Body
+  // `{ providerAccount, value }`. The value is stored 0600 and NEVER echoed — the
+  // response carries the provider(+account) NAME only (check:no-leak stays green).
+  // Token-gated like /mcp.
+  app.post("/api/root", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      providerAccount?: string;
+      value?: string;
+    };
+    if (!body.providerAccount || !body.value) {
+      return c.json({ error: "providerAccount and value required" }, 400);
+    }
+    putRoot(body.providerAccount, body.value); // value → disk, never returned
+    return c.json({ ok: true, providerAccount: body.providerAccount, roots: listRootAccounts() });
+  });
+
   // POST /api/chat — the USER → agent direction channel. The user types in the
   // dashboard; the message is appended to the transcript (renders at once over SSE)
-  // AND queued for the agent to drain via the pollChat MCP tool. Intent TEXT only —
-  // never a secret value (paste has its own path, POST /api/step). Token-gated.
+  // AND queued for the agent — delivered as `pendingUserMessages` piggybacked on the
+  // agent's next plan/executeStep/updateStatus/authorWizard call (no poll). Intent TEXT
+  // only — never a secret value (paste has its own path, POST /api/step). Token-gated.
   app.post("/api/chat", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
     const body = (await c.req.json().catch(() => ({}))) as { text?: string };

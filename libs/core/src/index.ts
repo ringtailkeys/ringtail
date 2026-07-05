@@ -19,6 +19,10 @@ export type { Environment } from "@ringtail/sinks";
 export * from "./wizard";
 // Typed cross-tool action executors (layer 2) — domain→CF + the dispatch registry.
 export * from "./actions";
+// The generic dynamic mint engine — agent-authored HTTP actions + the domain
+// allowlist (the structural floor). ONE path for mint · permission-check · wire.
+export * from "./allowlist";
+export * from "./mint";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
 export { startMockProvider, type MockProvider } from "./mock-provider";
 
