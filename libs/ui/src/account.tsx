@@ -24,8 +24,10 @@ export interface AccountViewProps {
   expiresAt?: string;
   /** The server-side provision count that gates the free tier. */
   usage: { projectsProvisioned: number; freeLimit: number };
-  /** Open the hosted billing portal (Dodo) — manage/cancel the subscription. */
+  /** Open the hosted billing portal (Dodo) — manage/cancel the subscription (pro tier). */
   onManageBilling: () => void;
+  /** Start the free→Pro upgrade (Dodo checkout). Free tier only; distinct from billing. */
+  onUpgrade?: () => void;
   /** Drop the local session. */
   onSignOut: () => void;
   /** Entitlement still loading → skeletons (no flash of a wrong tier). */
@@ -114,6 +116,7 @@ export function AccountView({
   expiresAt,
   usage,
   onManageBilling,
+  onUpgrade,
   onSignOut,
   loading,
 }: AccountViewProps) {
@@ -193,7 +196,7 @@ export function AccountView({
         <Button variant="ghost" onClick={onSignOut}>
           sign out
         </Button>
-        <Button onClick={onManageBilling}>
+        <Button onClick={isPro ? onManageBilling : onUpgrade}>
           {isPro ? "manage subscription →" : "upgrade to Pro →"}
         </Button>
       </div>

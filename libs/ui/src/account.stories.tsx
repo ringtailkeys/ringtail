@@ -18,6 +18,7 @@ type Story = StoryObj<typeof meta>;
 const base = {
   email: "rocco@ringtail.dev",
   onManageBilling: () => undefined,
+  onUpgrade: () => undefined,
   onSignOut: () => undefined,
 };
 
