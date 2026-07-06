@@ -130,6 +130,7 @@ export function App() {
                 expiresAt={snapshot.auth.expiresAt}
                 usage={snapshot.auth.usage ?? { projectsProvisioned: 0, freeLimit: 1 }}
                 onManageBilling={() => void openBillingPortal()}
+                onUpgrade={() => setUpgradeOpen(true)}
                 onSignOut={() => void signOut()}
               />
             </Reveal>
