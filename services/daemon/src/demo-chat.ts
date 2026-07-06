@@ -10,7 +10,8 @@ import { createDaemon } from "./index";
  * The DIRECTION driver — proves the dashboard is a CONVERSATION (architecture.md
  * §"The dashboard is a conversation" + §"Directable actions"). It plays BOTH sides:
  *   - the USER, via POST /api/chat (user → agent), and
- *   - the AGENT, as a real MCP client (pollChat → renderActions → sendChat).
+ *   - the AGENT, as a real MCP client (plan picks up pendingUserMessages →
+ *     renderActions → sendChat — no poll tool, direction piggybacks on plan).
  *
  * The living-actions proof: a user chat ADDS an action, a second chat REMOVES it,
  * and the SSE snapshot (the panel's source of truth) reflects each re-render live.
@@ -112,10 +113,11 @@ async function main(): Promise<void> {
       throw new Error("user message did not reach the transcript");
     }
 
-    console.log("[2] agent drains the direction (pollChat):");
-    const inbox = await call("pollChat");
-    console.log(`      → ${JSON.stringify(inbox.messages)}`);
-    if (!inbox.messages.includes("also set up Stripe")) throw new Error("agent did not receive it");
+    console.log("[2] agent picks up the direction (piggybacked on plan):");
+    const inbox = await call("plan");
+    console.log(`      → ${JSON.stringify(inbox.pendingUserMessages)}`);
+    if (!inbox.pendingUserMessages.includes("also set up Stripe"))
+      throw new Error("agent did not receive it");
 
     console.log("[3] agent re-maps → renderActions([stripe]) + sendChat:");
     await call("renderActions", { actions: [STRIPE] });
@@ -134,9 +136,10 @@ async function main(): Promise<void> {
     await userSays("skip Stripe");
     await settle();
 
-    console.log("[5] agent drains + re-maps → renderActions([]) (action removed):");
-    const inbox2 = await call("pollChat");
-    if (!inbox2.messages.includes("skip Stripe")) throw new Error("agent did not receive the skip");
+    console.log("[5] agent picks up + re-maps → renderActions([]) (action removed):");
+    const inbox2 = await call("plan");
+    if (!inbox2.pendingUserMessages.includes("skip Stripe"))
+      throw new Error("agent did not receive the skip");
     await call("renderActions", { actions: [] });
     await call("sendChat", { message: "Done — removed Stripe." });
     await settle();
@@ -169,8 +172,8 @@ async function main(): Promise<void> {
     // A pill tap posts its `value` through the SAME user → agent path (POST /api/chat).
     await userSays(CHOICES[0]!.value);
     await settle();
-    const inbox3 = await call("pollChat");
-    if (!inbox3.messages.includes("set up Stripe")) {
+    const inbox3 = await call("plan");
+    if (!inbox3.pendingUserMessages.includes("set up Stripe")) {
       throw new Error("tapped choice value did not reach the agent");
     }
     // Intent-only, value-free: the pills carry labels + reply intent, never a secret.

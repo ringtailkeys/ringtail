@@ -25,9 +25,22 @@ export interface Credential {
   updatedAt: string;
 }
 
+/** A per-account ROOT credential — the master key that MINTS other keys. Lives in
+ * the GLOBAL vault (not per-repo), keyed by `provider` or `provider:account`
+ * (agency multi-account). NEVER returned by any endpoint/tool — the daemon only
+ * ever substitutes it into an outbound call toward an allowlisted provider host. */
+export interface RootCredential {
+  value: string;
+  /** ISO-8601 timestamp of the last write. */
+  updatedAt: string;
+}
+
 export interface Store {
   /** Keyed by env-var name (e.g. CLOUDFLARE_API_TOKEN). */
   credentials: Record<string, Credential>;
+  /** The global root-key vault, keyed by `provider`(+`:account`). Optional so an
+   * existing store without it reads clean. */
+  roots?: Record<string, RootCredential>;
 }
 
 /** Root config dir. `RINGTAIL_HOME` overrides; default ~/.ringtail. */
@@ -44,7 +57,7 @@ export function readStore(): Store {
   if (!existsSync(file)) return { credentials: {} };
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<Store>;
-    return { credentials: parsed.credentials ?? {} };
+    return { credentials: parsed.credentials ?? {}, roots: parsed.roots ?? {} };
   } catch {
     // ponytail: corrupt/hand-edited file → treat as empty rather than crash;
     // the next write rewrites it clean. Upgrade path: back up + warn if this
@@ -67,6 +80,33 @@ export function putCredential(key: string, cred: Credential): void {
   const store = readStore();
   store.credentials[key] = cred;
   writeStore(store);
+}
+
+// ── the global root-key vault (per-account master keys that MINT other keys) ──
+
+/**
+ * Store a root key for `providerAccount` (`resend`, or `resend:client-x` for a
+ * multi-account agency). The GLOBAL vault — written once, reused across every repo
+ * and env. Same 0600 file as the credentials. The value NEVER leaves the daemon
+ * except substituted into an outbound call to an allowlisted provider host.
+ */
+export function putRoot(providerAccount: string, value: string): void {
+  const store = readStore();
+  store.roots ??= {};
+  store.roots[providerAccount] = { value, updatedAt: new Date().toISOString() };
+  writeStore(store);
+}
+
+/** Resolve a root key VALUE for `providerAccount`, or null if we don't hold one.
+ * Daemon-internal: callers substitute it into an allowlisted call, never surface it. */
+export function resolveRoot(providerAccount: string): string | null {
+  return readStore().roots?.[providerAccount]?.value ?? null;
+}
+
+/** The provider(+account) NAMES we hold a root key for — names only, never a value.
+ * Safe to surface (dashboard "which roots are set"). */
+export function listRootAccounts(): string[] {
+  return Object.keys(readStore().roots ?? {});
 }
 
 /**

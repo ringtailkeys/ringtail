@@ -29,10 +29,17 @@ export const recipe: Recipe = {
       };
     }
 
+    // PostHog: Bearer <personal API key> → GET /api/projects/ lists every project the
+    // key can reach (200 valid · 401/403 rejected). The API host must match the account
+    // region; derive it from the ingestion host if the user supplied an EU one, else US.
+    // (posthog.com/docs/api/personal-api-keys + /api/projects, verified 2026-07)
+    const apiHost = (creds["NEXT_PUBLIC_POSTHOG_HOST"] ?? "").includes("eu")
+      ? "https://eu.posthog.com"
+      : "https://us.posthog.com";
+
     let res: Response;
     try {
-      // TODO(c7): current scopes/token-URL via Context7 at runtime
-      res = await fetch("https://us.posthog.com/api/projects/", {
+      res = await fetch(`${apiHost}/api/projects/`, {
         headers: { Authorization: `Bearer ${personalKey}` },
       });
     } catch (err) {

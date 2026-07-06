@@ -1,8 +1,9 @@
 /**
  * @ringtail/recipes — one Recipe per provider. A recipe knows which env vars it
  * owns, how it's acquired (mode), how to mint + scope-validate a token, and how
- * to auto-provision one. Live scope/token-URL details are marked TODO(c7) — to be
- * pulled from Context7 at runtime so recipes don't rot against provider changes.
+ * to auto-provision one. Deep-links + validate endpoints are the providers' real,
+ * documented URLs (verified 2026-07); re-check against Context7 when a provider's
+ * API shifts so recipes don't rot.
  */
 export type { Recipe, ValidateResult, Mode, ProvisionCtx } from "./recipe";
 

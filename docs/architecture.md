@@ -114,7 +114,7 @@ Before asking, scan **known** credential stores (`.env.local`, `~/.ringtail`, `~
 - **P5 — DONE.** Local credential discovery (`~/.ringtail`/`.env.local`/known stores, names + source only, reuse complete root grants) + `authorWizard` universal fallback for the long tail. Krispyai's fuller stack still onboards recipe-by-recipe.
 - **THE GUARANTEE — DONE + CI-gated.** No MCP tool returns a value; `paste` flows user → daemon → `libs/store`, never into the snapshot/SSE/any response (`submit.ts`). Enforced by `check:no-leak` (static + runtime + e2e) as a build gate. Zero telemetry SDK in the tree (verified by grep).
 - **Recovery (Layer 4) — DONE.** Wrong-scope / failed-action are first-class rendered states (`wrong-scope`/`failed` chips); the agent re-plans into a recovery wizard. Proven end-to-end in `bun run demo` (wrong-scope → recovery → synced) and `libs/core` tests.
-- **Chat — DONE.** Dashboard chat panel over the same MCP connection (agent converses + renders); `agentSay`/`pollChat` relay is intent-only, never a value (`state.ts`). `bun run demo:chat` exercises it.
+- **Chat — DONE.** Dashboard chat panel over the same MCP connection (agent converses + renders). Agent→user via `sendChat`; user→agent is **event-driven, no polling** — a typed message rides back as `pendingUserMessages` piggybacked on the agent's next `plan`/`executeStep`/`updateStatus`/`authorWizard` call (intent-only, never a value; `state.ts`). A `paste` to `submitStep` auto-advances the next safe auto step in the daemon. `bun run demo:chat` exercises it.
 
 ## Fits the ecosystem
 - Ships as a **Delulus "Provision your stack" Move** (Navigator triggers it via MCP; consent = a Loop human-handoff; status back, never values).

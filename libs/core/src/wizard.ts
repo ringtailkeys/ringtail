@@ -133,6 +133,25 @@ export interface ActiveProject {
  * but no project → step 2 (pick project); both → step 3 (the cockpit). Persisted here
  * so a dashboard reload restores the right step off the primed SSE snapshot.
  */
+/**
+ * A parked consequential mint awaiting an out-of-band HUMAN approve (the "Next steps"
+ * panel renders these with an Approve button). Value-free: NAMES + method + the server
+ * `nonce`. The nonce is the UNFORGEABLE approval token — it rides the SSE snapshot to
+ * the dashboard, and only a `POST /api/action` carrying it back executes the mint. It
+ * is NEVER returned to the agent over MCP, so the agent that proposed can't self-approve.
+ */
+export interface PendingMint {
+  /** Public correlation id (handed to the agent as `needs-confirm` evidence). */
+  id: string;
+  /** The server-generated approval secret — dashboard-only; required by POST /api/action. */
+  nonce: string;
+  providerAccount: string;
+  method: string;
+  danger?: Danger;
+  /** The env-var the mint would file (a NAME, never a value) — shown on the approve card. */
+  varName?: string;
+}
+
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
@@ -140,4 +159,6 @@ export interface DaemonSnapshot {
   chat: ChatMessage[];
   agent: SelectedAgent | null;
   project: ActiveProject | null;
+  /** Consequential mints the agent proposed, awaiting a human approve (unforgeable nonce). */
+  pendingMints: PendingMint[];
 }

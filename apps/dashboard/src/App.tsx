@@ -15,6 +15,7 @@ import roccoChill from "../../.brand-assets/rocco-chill.png";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { ChooseProject } from "./cockpit/ChooseProject";
 import { LiveGrid } from "./cockpit/LiveGrid";
+import { RootIntake } from "./cockpit/RootIntake";
 import { WizardModal } from "./cockpit/WizardModal";
 import {
   approveAction,
@@ -138,6 +139,7 @@ function Cockpit({
           onSwitchAgent={onSwitchAgent}
         />
       )}
+      {live && <RootIntake live={live} />}
       <LiveGrid grid={snapshot.grid} />
       <div
         style={{
