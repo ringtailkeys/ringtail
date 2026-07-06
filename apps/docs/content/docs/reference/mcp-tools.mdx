@@ -40,7 +40,7 @@ value** — that is enforced by `check:no-leak`.
   hard-confirm → dispatch). A `destructive` action is refused unless `confirmed: true`. Returns
   status + key names.
 - **`mintKey(action, env?)`** — the **generic dynamic executor**. The agent authors
-  an HTTP action inline — `{ providerAccount, method, url, headers (with a `{{ROOT}}` placeholder),
+  an HTTP action inline — `{ providerAccount, method, url, headers (with a {{ROOT}} placeholder),
   body?, extract? }` — and the daemon resolves the root key from the global vault, **enforces the
   domain allowlist** (a non-allowlisted host is rejected before any HTTP; redirects off the
   allowlisted host are refused, not followed), runs the call, and — if `extract` names a minted
