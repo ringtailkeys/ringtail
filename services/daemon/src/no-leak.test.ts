@@ -141,18 +141,10 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
     body: JSON.stringify({ providerAccount: "mock", value: ROOT_KEY }),
   });
   const rootBody = await rootRes.text();
-  // permission-check (no extract) — a read-only probe that substitutes {{ROOT}}.
-  await call("mintKey", {
-    action: {
-      providerAccount: "mock",
-      method: "POST",
-      url: `${mock.url}/validate`,
-      headers: { Authorization: "Bearer {{ROOT}}" },
-      body: { token: "mock-token-full" },
-    },
-  });
-  // mint (extract) — the minted value lands in the sink; only the NAME comes back.
-  await call("mintKey", {
+  // mint (a {{ROOT}} POST → a consequential write): the agent can only PROPOSE. mintKey
+  // parks it and returns needs-confirm — NO value, and NOT the nonce (that goes to the
+  // dashboard over SSE only). Nothing has been minted yet.
+  const proposed = await call("mintKey", {
     action: {
       providerAccount: "mock",
       method: "POST",
@@ -163,7 +155,12 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
     },
     env: "local",
   });
-  // the structural floor: a non-allowlisted host is rejected before any HTTP.
+  const proposedText = (proposed.content as Array<{ text?: string }>)?.[0]?.text ?? "{}";
+  expect(JSON.parse(proposedText).status).toBe("needs-confirm");
+  expect(proposedText).not.toContain(ROOT_KEY); // needs-confirm carries no value
+
+  // the structural floor: a non-allowlisted host is rejected immediately (before any
+  // parking or HTTP) — a doomed action never nags a human to approve garbage.
   const rejected = await call("mintKey", {
     action: {
       providerAccount: "mock",
@@ -175,6 +172,35 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
   });
   const rejectedText = (rejected.content as Array<{ text?: string }>)?.[0]?.text ?? "{}";
   expect(JSON.parse(rejectedText).status).toBe("rejected");
+
+  // the HUMAN approves: read the server nonce off the SSE (the DASHBOARD channel — the
+  // agent never received it) and POST it to /api/action. ONLY now does the mint run and
+  // the root reach the allowlisted host. This is the unforgeable confirm channel.
+  await new Promise((r) => setTimeout(r, 40)); // let the parked-mint snapshot flush to SSE
+  const findNonce = (): string => {
+    for (const chunk of [...sseChunks].reverse()) {
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const snap = JSON.parse(line.slice(6)) as {
+            pendingMints?: Array<{ nonce: string; varName?: string }>;
+          };
+          const hit = snap.pendingMints?.find((p) => p.varName === "MINTKEY_TEST_KEY");
+          if (hit) return hit.nonce;
+        } catch {
+          /* a partial SSE chunk — skip */
+        }
+      }
+    }
+    throw new Error("parked-mint nonce not found on the SSE stream");
+  };
+  const approveRes = await fetch(`http://127.0.0.1:${port}/api/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ nonce: findNonce() }),
+  });
+  const approveBody = await approveRes.text();
+  expect(JSON.parse(approveBody).status).toBe("minted");
   // {{ROOT}} was substituted and the REAL root reached the allowlisted mock host…
   expect(mock.calls.authSeen).toContain(`Bearer ${ROOT_KEY}`);
 
@@ -184,7 +210,7 @@ test("no MCP tool response and no SSE payload carries a secret value", async () 
   await pump;
   await client.close();
 
-  const daemonToClient = [...toolResults, ...sseChunks, stepBody, rootBody].join("\n");
+  const daemonToClient = [...toolResults, ...sseChunks, stepBody, rootBody, approveBody].join("\n");
   expect(stepBody).not.toContain(BROWSER_PASTED);
   expect(daemonToClient).not.toContain(BROWSER_PASTED);
 

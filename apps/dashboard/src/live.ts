@@ -194,5 +194,13 @@ export function fixtureSnapshot(): DaemonSnapshot {
       prod: p.envs.prod,
     },
   }));
-  return { grid, wizard: null, actions: [], chat: [], agent: null, project: null };
+  return {
+    grid,
+    wizard: null,
+    actions: [],
+    chat: [],
+    agent: null,
+    project: null,
+    pendingMints: [],
+  };
 }

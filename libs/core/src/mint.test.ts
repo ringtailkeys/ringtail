@@ -8,7 +8,14 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { putRoot, readStore } from "@ringtail/store";
-import { executeMintAction, MintActionSchema, type MintAction } from "./mint";
+import {
+  approveMintAction,
+  executeMintAction,
+  isConsequential,
+  MintActionSchema,
+  type MintAction,
+  proposeMintAction,
+} from "./mint";
 import { startMockProvider, type MockProvider } from "./mock-provider";
 
 // The root master key — must reach the allowlisted host, must never appear in a return.
@@ -158,6 +165,101 @@ test("schema: an extract.varName carrying a newline/= is rejected at the trust b
     extract: { varName: "X=1\nBETTER_AUTH_SECRET", path: "token" },
   });
   expect(parsed.success).toBe(false);
+});
+
+// ── the unforgeable human-confirm channel for consequential mints ────────────────
+
+test("consequence is DERIVED server-side: every root-spending write is consequential; danger can't downgrade", () => {
+  const rootWrite = {
+    providerAccount: "mock",
+    url: "http://localhost/x",
+    headers: { Authorization: "Bearer {{ROOT}}" },
+  } as const;
+  expect(isConsequential({ ...rootWrite, method: "DELETE" })).toBe(true);
+  expect(isConsequential({ ...rootWrite, method: "PUT" })).toBe(true);
+  expect(isConsequential({ ...rootWrite, method: "PATCH" })).toBe(true);
+  // a {{ROOT}} POST creates/rotates with the root → consequential even if the agent
+  // self-declares danger:"safe" (safe can only ESCALATE, never downgrade a write).
+  expect(isConsequential({ ...rootWrite, method: "POST", danger: "safe" })).toBe(true);
+  // a read-only GET, and a POST that never touches {{ROOT}} (a probe), stay auto-run.
+  expect(
+    isConsequential({ providerAccount: "mock", url: "http://localhost/x", method: "GET" }),
+  ).toBe(false);
+  expect(
+    isConsequential({
+      providerAccount: "mock",
+      url: "http://localhost/x",
+      method: "POST",
+      body: { probe: 1 },
+    }),
+  ).toBe(false);
+});
+
+test("propose gate: a consequential mint is HELD (needs-confirm); an agent `confirmed:true` can't self-approve", async () => {
+  const action: MintAction = {
+    providerAccount: "mock",
+    method: "POST",
+    url: `${mock.url}/oauth/token`,
+    headers: { Authorization: "Bearer {{ROOT}}" },
+    body: { grant: "full" },
+    extract: { varName: "PROPOSE_HELD_KEY", path: "token" },
+  };
+  // The agent smuggles confirmed:true — proposeMintAction MUST drop it and still hold.
+  const r = await proposeMintAction(action, { ...opts, confirmed: true });
+  expect(r.result.status).toBe("needs-confirm");
+  expect(r.result.id).toBeTruthy();
+  expect(r.pending?.nonce).toBeTruthy();
+  // THE nonce never rides back to the agent (only the public id does).
+  expect(JSON.stringify(r.result)).not.toContain(r.pending!.nonce);
+  // …and nothing executed: the provider was never hit.
+  expect(mock.calls.oauthToken).toEqual([]);
+});
+
+test("approve gate: only the server nonce (human, out-of-band) executes the parked mint", async () => {
+  const action: MintAction = {
+    providerAccount: "mock",
+    method: "POST",
+    url: `${mock.url}/oauth/token`,
+    headers: { Authorization: "Bearer {{ROOT}}" },
+    body: { grant: "full" },
+    extract: { varName: "PROPOSE_MINT_KEY", path: "token" },
+  };
+  const proposed = await proposeMintAction(action, opts);
+  expect(proposed.result.status).toBe("needs-confirm");
+  const nonce = proposed.pending!.nonce;
+
+  // a forged / unknown nonce never executes.
+  const forged = await approveMintAction("not-a-real-nonce");
+  expect(forged.status).toBe("rejected");
+  expect(mock.calls.oauthToken).toEqual([]);
+
+  // the real server nonce (the human via POST /api/action) DOES execute.
+  const approved = await approveMintAction(nonce);
+  expect(approved.status).toBe("minted");
+  expect(approved.varName).toBe("PROPOSE_MINT_KEY");
+  expect(mock.calls.oauthToken.length).toBe(1);
+
+  // the nonce is single-use: a replay is rejected.
+  const replay = await approveMintAction(nonce);
+  expect(replay.status).toBe("rejected");
+
+  // THE GUARANTEE holds through the approve path: no root, no minted value comes back.
+  const blob = JSON.stringify(approved);
+  expect(blob).not.toContain(ROOT);
+  expect(blob).not.toContain("mock-token-full");
+});
+
+test("read-only auto-runs through propose: a non-{{ROOT}} POST probe is not parked", async () => {
+  const action: MintAction = {
+    providerAccount: "mock",
+    method: "POST",
+    url: `${mock.url}/validate`,
+    body: { token: "mock-token-full" }, // no {{ROOT}} → a probe, not a root-spending write
+  };
+  const r = await proposeMintAction(action, opts);
+  expect(r.pending).toBeUndefined(); // not parked
+  expect(r.result.status).toBe("ok"); // ran immediately
+  expect(mock.calls.validate.length).toBe(1);
 });
 
 test("no-root: a {{ROOT}} action with no stored root recovers, never calls out", async () => {

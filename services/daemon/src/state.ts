@@ -8,6 +8,7 @@ import {
   type DaemonSnapshot,
   type GridEnv,
   type GridRow,
+  type PendingMint,
   type SelectedAgent,
   type Step,
   type StepStatus,
@@ -41,6 +42,10 @@ export class DaemonStore {
    * SSE snapshot on reload. */
   #agent: SelectedAgent | null = null;
   #project: ActiveProject | null = null;
+  /** Consequential mints the agent proposed, awaiting a human approve. Carries the
+   * server nonce so the dashboard can POST it back to /api/action — value-free (NAMES
+   * + method + nonce, never a root/minted value). Cleared once approved. */
+  #pendingMints: PendingMint[] = [];
   readonly #subs = new Set<Subscriber>();
 
   /** ponytail: returns live refs (mutate-then-emit). Fine single-threaded; the
@@ -53,6 +58,7 @@ export class DaemonStore {
       chat: this.#chat,
       agent: this.#agent,
       project: this.#project,
+      pendingMints: this.#pendingMints,
     };
   }
 
@@ -159,6 +165,21 @@ export class DaemonStore {
   postUserMessage(text: string): void {
     this.#chat.push({ role: "user", text, ts: Date.now() });
     this.#inbox.push(text);
+    this.#emit();
+  }
+
+  // ── pending mints: the unforgeable human-approve queue ──────────────────────
+
+  /** Park a consequential mint the agent proposed (mintKey) → renders on the dashboard
+   * with an Approve button. The nonce rides the SSE snapshot to the dashboard ONLY. */
+  addPendingMint(pending: PendingMint): void {
+    this.#pendingMints.push(pending);
+    this.#emit();
+  }
+
+  /** Drop a parked mint once its nonce has been approved (or dismissed). */
+  clearPendingMint(nonce: string): void {
+    this.#pendingMints = this.#pendingMints.filter((p) => p.nonce !== nonce);
     this.#emit();
   }
 

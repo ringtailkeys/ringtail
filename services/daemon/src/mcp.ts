@@ -6,11 +6,11 @@ import {
   authorWizard,
   type ChatChoice,
   ChatChoiceSchema,
-  executeMintAction,
   GRID_ENVS,
   type GridEnv,
   type MintAction,
   MintActionSchema,
+  proposeMintAction,
   type Wizard,
   WizardSchema,
 } from "@ringtail/core";
@@ -303,27 +303,31 @@ export function buildMcpServer(
   // sink under `ringtail/<repo>/<env>/<provider>` naming. One path covers mint,
   // read-only permission-check (no extract), and cross-provider wire. Returns
   // `{ providerAccount, varName?, status, reason? }` — NEVER a value (root or minted).
-  // A `confirm`/`destructive` action refuses to run without a HUMAN confirm. The agent
-  // does NOT get a `confirmed` argument: an agent-supplied `confirmed:true` would be a
-  // self-forged approval, so the dynamic engine never accepts one over MCP. A
-  // consequential mintKey (e.g. DELETE) comes back `needs-confirm` and is approved
-  // out-of-band by the human, never one-click by the agent that authored it.
+  // Every root-spending WRITE (DELETE/PUT/PATCH, or a POST that substitutes {{ROOT}})
+  // is consequential and can only be PROPOSED: the daemon parks it under a server nonce,
+  // routes that nonce to the dashboard over SSE (NEVER back to the agent), and returns
+  // `needs-confirm` + a public id. It executes ONLY when a human posts the nonce to
+  // POST /api/action — so the agent that authored the action can never self-approve it.
+  // A read-only probe (GET, or a POST that doesn't touch {{ROOT}}) still auto-runs.
   tool<{ action: MintAction; env?: GridEnv }>(
     server,
     "mintKey",
     {
       description:
-        "Run an agent-authored provisioning action (mint / permission-check / wire) with the stored root key. The URL host must be allowlisted for the provider (else rejected before any HTTP); a minted secret lands in the sink and only its var NAME comes back. Consequential actions (e.g. DELETE) come back needs-confirm — a human approves them, the agent cannot self-confirm. Never returns a secret value.",
+        "Run an agent-authored provisioning action (mint / permission-check / wire) with the stored root key. The URL host must be allowlisted for the provider (else rejected before any HTTP); a minted secret lands in the sink and only its var NAME comes back. A root-spending write (DELETE/PUT/PATCH or a {{ROOT}} POST) is consequential: it comes back needs-confirm and is parked for a human to approve in the dashboard — the agent cannot self-confirm. Never returns a secret value.",
       inputSchema: {
         action: MintActionSchema,
         env: GRID_ENV.optional(),
       },
     },
     async ({ action, env }) => {
-      const result = await executeMintAction(action, {
+      const { result, pending } = await proposeMintAction(action, {
         ...engineOpts,
         env: env ?? "local",
       });
+      // A consequential action is parked: route the unforgeable nonce to the dashboard
+      // over SSE (never back to the agent). The agent only gets `needs-confirm` + id.
+      if (pending) store.addPendingMint(pending);
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },
   );

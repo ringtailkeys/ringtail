@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getEnv } from "@ringtail/config";
 import {
+  approveMintAction,
   connectionMap,
   defaultEnvironment,
   gridFromExample,
@@ -187,7 +188,19 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // daemon executes with the stored creds and returns status/names, never values.
   app.post("/api/action", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
-    const body = (await c.req.json().catch(() => ({}))) as { id?: string; confirmed?: boolean };
+    const body = (await c.req.json().catch(() => ({}))) as {
+      id?: string;
+      confirmed?: boolean;
+      nonce?: string;
+    };
+    // Approve a parked consequential mint by its server nonce — the UNFORGEABLE human
+    // channel. The agent never received this nonce (it went to the dashboard over SSE),
+    // so it cannot self-approve the write it proposed. Executes with confirmed:true.
+    if (body.nonce) {
+      const result = await approveMintAction(body.nonce);
+      if (result.status !== "rejected") store.clearPendingMint(body.nonce);
+      return c.json(result);
+    }
     if (!body.id) return c.json({ error: "id required" }, 400);
     try {
       const result = await runAction(store, body.id, {

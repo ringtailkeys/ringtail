@@ -1,8 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { syncCredential, type Environment } from "@ringtail/sinks";
 import { discoverCredentials, putCredential, resolveRoot } from "@ringtail/store";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
-import { DangerSchema } from "./wizard";
+import { DangerSchema, type PendingMint } from "./wizard";
 
 /**
  * The GENERIC action executor — the heart of the dynamic mint engine. There is NO
@@ -58,14 +59,37 @@ export interface MintResult {
   status: "minted" | "reused" | "ok" | "rejected" | "needs-confirm" | "no-root" | "failed";
   /** Plain-language cause (allowlist reject, missing scope, rate-limit…). No value. */
   reason?: string;
+  /** Public correlation id for a parked (`needs-confirm`) consequential mint. NOT the
+   * nonce — the agent gets this; the unforgeable nonce goes to the dashboard only. */
+  id?: string;
 }
 
 export interface MintOpts {
   repoName: string;
   env: Environment;
   envLocalPath?: string;
-  /** The human's hard-confirm for a consequential (`confirm`/`destructive`) action. */
+  /** The human's hard-confirm for a consequential action. NEVER settable by the agent:
+   * the MCP `mintKey` tool routes through `proposeMintAction` (which drops it); this is
+   * flipped `true` ONLY by `approveMintAction` after a nonce-carrying human approve. */
   confirmed?: boolean;
+}
+
+/**
+ * ALL root-spending writes are consequential — DERIVED server-side, never trusted from
+ * the agent's self-declared `danger` (which may only ESCALATE, never downgrade):
+ *   - DELETE / PUT / PATCH always spend the root key destructively (delete/rotate).
+ *   - a POST that substitutes `{{ROOT}}` creates/rotates with the root key.
+ *   - an explicit `danger !== 'safe'` escalates anything else (e.g. a flagged GET).
+ * A GET, or a POST that does NOT touch `{{ROOT}}` (a probe), stays auto-run. So a
+ * `danger:'safe'` on a real write is OVERRIDDEN — safe can never downgrade a write.
+ */
+export function isConsequential(action: MintAction): boolean {
+  const write =
+    action.method === "DELETE" ||
+    action.method === "PUT" ||
+    action.method === "PATCH" ||
+    (action.method === "POST" && usesRoot(action));
+  return write || (action.danger !== undefined && action.danger !== "safe");
 }
 
 /** The audit name a minted key is filed under so it can be found + revoked later
@@ -123,6 +147,29 @@ function illegalHeader(headers: Record<string, string>): string | null {
 }
 
 /**
+ * The structural floor: rejects that MUST fire before the root key is resolved OR the
+ * action is ever parked for approval — a non-allowlisted host, or a control-char header.
+ * Shared by `executeMintAction` (gates 1 + 1b) and `proposeMintAction` so a doomed
+ * action rejects immediately instead of nagging a human to approve garbage.
+ */
+function structuralReject(action: MintAction): MintResult | null {
+  // 1. allowlist floor — reject before resolving a root key or making any call.
+  if (!hostAllowed(action.providerAccount, action.url)) {
+    return {
+      providerAccount: action.providerAccount,
+      status: "rejected",
+      reason: `host not allowlisted for ${providerOf(action.providerAccount)}: ${hostOf(action.url)}`,
+    };
+  }
+  // 1b. header hygiene — reject a control char in any authored header BEFORE the root
+  //     is resolved. Stops CRLF header-injection AND the Bun `Headers`-throws-with-the-
+  //     substituted-value leak (the root can't ride out in an exception `reason`).
+  const bad = illegalHeader(action.headers ?? {});
+  if (bad) return { providerAccount: action.providerAccount, status: "rejected", reason: bad };
+  return null;
+}
+
+/**
  * THE GUARANTEE at the last inch: redact any known secret VALUE (root or minted) from
  * an outgoing `reason` before it leaves the daemon. Even if a provider mirrors our
  * Authorization header into its error body, or a lower layer embeds the substituted
@@ -150,33 +197,16 @@ function scrub(reason: string, secrets: string[]): string {
 export async function executeMintAction(action: MintAction, opts: MintOpts): Promise<MintResult> {
   const { providerAccount } = action;
 
-  // 1. allowlist floor — reject before resolving a root key or making any call.
-  if (!hostAllowed(providerAccount, action.url)) {
-    return {
-      providerAccount,
-      status: "rejected",
-      reason: `host not allowlisted for ${providerOf(providerAccount)}: ${hostOf(action.url)}`,
-    };
-  }
+  // 1 + 1b. the structural floor — a non-allowlisted host or a control-char header is
+  //         REJECTED before the root key is resolved or any HTTP happens.
+  const rejected = structuralReject(action);
+  if (rejected) return rejected;
 
-  // 1b. header hygiene — reject a control char in any authored header BEFORE the root
-  //     is resolved. Stops CRLF header-injection AND the Bun `Headers`-throws-with-the-
-  //     substituted-value leak (the root can't ride out in an exception `reason`).
-  const badHeader = illegalHeader(action.headers ?? {});
-  if (badHeader) {
-    return { providerAccount, status: "rejected", reason: badHeader };
-  }
-
-  // 2. approve gate — consequential actions never one-click. The consequence is
-  //    DERIVED from the method, never trusted from the agent's self-declared `danger`:
-  //    a DELETE spends the root key destructively (delete/rotate a live key) and ALWAYS
-  //    needs confirm even if the agent omits `danger`. (POST/PUT/PATCH can be a safe
-  //    permission-check OR a create — the method alone can't tell a mint from a probe —
-  //    so those still honor an explicit `danger`; the happy-path mint auto-runs as
-  //    designed.)
-  //    ponytail: DELETE is the structural floor; a full create/rotate approve needs a
-  //    human-confirm channel for mintKey (none wired yet), so until then it's the
-  //    honor-`danger` for writes + a hard floor for deletes.
+  // 2. approve gate — a consequential action never runs here without `confirmed`. The
+  //    broad "is this a root-spending write?" decision (isConsequential) lives at the
+  //    agent boundary in `proposeMintAction`, which parks it for a human. This inner
+  //    gate is the last-inch floor: even if reached directly, a DELETE (or an explicit
+  //    `danger`) refuses to run un-confirmed. `approveMintAction` sets `confirmed:true`.
   const consequential = action.method === "DELETE" || (action.danger && action.danger !== "safe");
   if (consequential && !opts.confirmed) {
     return {
@@ -298,4 +328,79 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     updatedAt: new Date().toISOString(),
   });
   return { providerAccount, varName, status: "minted" };
+}
+
+/**
+ * The parked-mint registry — the UNFORGEABLE human-confirm channel for `mintKey`.
+ * A consequential action the agent proposes is stashed here under a server-generated
+ * nonce; it executes ONLY when a human posts that nonce back via POST /api/action. The
+ * agent never receives the nonce (only the dashboard does, over SSE), so the agent that
+ * authored the action cannot self-approve it — closing the "agent sets confirmed:true"
+ * hole. Keyed by nonce.
+ * ponytail: module-level Map — the daemon is one process, one store. A restart drops
+ * pending approvals (the agent just re-proposes), which is the correct fail-safe for a
+ * security gate; persist them only if approvals must survive a crash.
+ */
+const pendingMints = new Map<string, { action: MintAction; opts: MintOpts }>();
+
+export interface ProposeResult {
+  /** The value-free result handed to the AGENT — carries the public `id`, NEVER the nonce. */
+  result: MintResult;
+  /** Present ONLY when parked: the daemon routes this to the dashboard SSE (never the agent). */
+  pending?: PendingMint;
+}
+
+/**
+ * The agent PROPOSES an action (the MCP `mintKey` entry). A read-only / non-`{{ROOT}}`
+ * probe auto-runs now. A consequential root-spending write (isConsequential) is PARKED
+ * under a fresh server nonce and returned as `needs-confirm` — NO execution, and the
+ * nonce is NOT in the agent-facing result. Any `opts.confirmed` an agent smuggles in is
+ * deliberately DROPPED here, so the MCP tool can never self-approve. A structurally
+ * doomed action (bad host / header) still rejects immediately rather than nagging.
+ */
+export async function proposeMintAction(
+  action: MintAction,
+  opts: MintOpts,
+): Promise<ProposeResult> {
+  const rejected = structuralReject(action);
+  if (rejected) return { result: rejected };
+  if (!isConsequential(action)) {
+    // Not a write → run it now, but never honor an agent-supplied confirm.
+    return { result: await executeMintAction(action, { ...opts, confirmed: false }) };
+  }
+  const id = randomBytes(6).toString("hex");
+  const nonce = randomBytes(24).toString("hex");
+  pendingMints.set(nonce, { action, opts });
+  const pending: PendingMint = {
+    id,
+    nonce,
+    providerAccount: action.providerAccount,
+    method: action.method,
+    danger: action.danger,
+    varName: action.extract?.varName,
+  };
+  return {
+    pending,
+    result: {
+      providerAccount: action.providerAccount,
+      status: "needs-confirm",
+      id,
+      reason: `human approval required (${action.danger ?? action.method}) — approve in the dashboard`,
+    },
+  };
+}
+
+/**
+ * The HUMAN approves a parked mint by posting its server nonce to POST /api/action. The
+ * agent never received the nonce, so it cannot forge this. An unknown or already-used
+ * nonce is rejected (never executes). On a hit the parked action runs with the ONE
+ * `confirmed:true` the system ever sets.
+ */
+export async function approveMintAction(nonce: string): Promise<MintResult> {
+  const parked = nonce ? pendingMints.get(nonce) : undefined;
+  if (!parked) {
+    return { providerAccount: "", status: "rejected", reason: "unknown or already-used approval" };
+  }
+  pendingMints.delete(nonce);
+  return executeMintAction(parked.action, { ...parked.opts, confirmed: true });
 }
