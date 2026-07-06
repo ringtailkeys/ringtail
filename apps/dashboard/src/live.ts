@@ -119,7 +119,11 @@ export async function signIn(email: string): Promise<void> {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ email }),
   });
-  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `sign-in failed: ${res.status}`);
+  if (!res.ok)
+    throw new Error(
+      ((await res.json().catch(() => ({}))) as { error?: string }).error ??
+        `sign-in failed: ${res.status}`,
+    );
 }
 
 /** Sign-in phase 2: verify the code → the daemon persists the session + pushes auth over SSE. */
@@ -130,7 +134,11 @@ export async function verifyOtp(email: string, otp: string): Promise<void> {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ email, otp }),
   });
-  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `verify failed: ${res.status}`);
+  if (!res.ok)
+    throw new Error(
+      ((await res.json().catch(() => ({}))) as { error?: string }).error ??
+        `verify failed: ${res.status}`,
+    );
 }
 
 /** Sign out — drop the local session (the account's server-side usage is untouched). */
@@ -263,5 +271,8 @@ export function fixtureSnapshot(): DaemonSnapshot {
     // Offline/Storybook: signed-in so the fixture cockpit renders (the gate needs a
     // live daemon to enforce sign-in; the daemon-down path is the demo/fixture view).
     auth: { signedIn: true, tier: "pro" },
+    // Fixtures are the offline demo view; `!live` short-circuits the gate to the cockpit
+    // regardless, so this is cosmetic — mark it `app` to represent the full product.
+    edition: "app",
   };
 }

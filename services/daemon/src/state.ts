@@ -1,3 +1,4 @@
+import { getEnv } from "@ringtail/config";
 import {
   gridSeed,
   type Action,
@@ -50,6 +51,9 @@ export class DaemonStore {
   /** Account/entitlement state (control-plane). Drives the sign-in gate + freemium
    * enforcement. Value-free: email + tier + a server-side count, never a session token. */
   #auth: AuthState = { signedIn: false };
+  /** The running edition (config, default `oss`). Streamed on the snapshot so the
+   * dashboard renders the gate ONLY in `app` — one source of truth, no client env. */
+  readonly #edition = getEnv().RINGTAIL_EDITION;
   readonly #subs = new Set<Subscriber>();
 
   /** ponytail: returns live refs (mutate-then-emit). Fine single-threaded; the
@@ -64,6 +68,7 @@ export class DaemonStore {
       project: this.#project,
       pendingMints: this.#pendingMints,
       auth: this.#auth,
+      edition: this.#edition,
     };
   }
 

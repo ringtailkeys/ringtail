@@ -7,6 +7,11 @@ import { z } from "zod";
  * here, not three layers deep in a sink.
  */
 export const EnvSchema = z.object({
+  // Which edition is running. `oss` = `ringtail up` from source: unlimited, free, NO
+  // account, NO control-plane calls — the goodwill tier. `app` = the native desktop
+  // build: sign-in wall + freemium metering + upgrade. Defaults to `oss` so building
+  // from source is ALWAYS ungated; only `apps/desktop` sets `app` on its sidecar.
+  RINGTAIL_EDITION: z.enum(["oss", "app"]).default("oss"),
   // Daemon (the machine surface) + dashboard (the human cockpit) ports.
   DAEMON_PORT: z.coerce.number().int().positive().default(4880),
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4881),

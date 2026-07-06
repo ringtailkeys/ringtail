@@ -17,13 +17,7 @@ import { serveStatic } from "hono/bun";
 import { clearSession, getSession, listRootAccounts, putRoot, putSession } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
-import {
-  createCheckout,
-  getEntitlement,
-  recordUsage,
-  sendOtp,
-  verifyOtp,
-} from "./control-plane";
+import { createCheckout, getEntitlement, recordUsage, sendOtp, verifyOtp } from "./control-plane";
 import { buildMcpServer } from "./mcp";
 import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
@@ -36,6 +30,9 @@ import { applyStep } from "./submit";
  * gate shows sign-in rather than a half-authed cockpit. The session token stays private.
  */
 async function refreshAuth(store: DaemonStore): Promise<void> {
+  // OSS edition: no account, no control-plane. Leave auth signed-out (the dashboard
+  // never renders the sign-in wall in `oss`) and make ZERO outbound calls.
+  if (getEnv().RINGTAIL_EDITION !== "app") return;
   const session = getSession();
   if (!session) {
     store.setAuth({ signedIn: false });
@@ -124,6 +121,11 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   const bearer = (c: { req: { header: (n: string) => string | undefined } }): string =>
     (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
 
+  // The paywall lives ONLY in the native app. In `oss` (`ringtail up` from source) the
+  // sign-in wall, entitlement/usage metering, and upgrade never activate — the daemon
+  // makes ZERO control-plane calls. `apps/desktop` sets RINGTAIL_EDITION=app on its sidecar.
+  const isApp = getEnv().RINGTAIL_EDITION === "app";
+
   // ── legacy machine surface (unchanged) ─────────────────────────────────────
   app.get("/health", (c) => c.json({ ok: true }));
   app.get("/api/status", (c) => c.json({ providers: connectionMap() }));
@@ -163,6 +165,7 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // POST /api/signin { email } → the control-plane emails a one-time code. Email only.
   app.post("/api/signin", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    if (!isApp) return c.json({ error: "sign-in is app-edition only" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as { email?: string };
     if (!body.email) return c.json({ error: "email required" }, 400);
     try {
@@ -179,6 +182,7 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // server-side regardless.
   app.post("/api/verify", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    if (!isApp) return c.json({ error: "sign-in is app-edition only" }, 404);
     const body = (await c.req.json().catch(() => ({}))) as { email?: string; otp?: string };
     if (!body.email || !body.otp) return c.json({ error: "email and otp required" }, 400);
     try {
@@ -205,6 +209,7 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // dashboard re-checks entitlement to unlock.
   app.post("/api/checkout", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    if (!isApp) return c.json({ error: "billing is app-edition only" }, 404);
     const session = getSession();
     if (!session) return c.json({ error: "not signed in" }, 401);
     try {
@@ -218,6 +223,7 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // unlock). No body; publishes the fresh tier/usage over SSE.
   app.post("/api/entitlement/refresh", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    if (!isApp) return c.json({ error: "entitlement is app-edition only" }, 404);
     await refreshAuth(store);
     const { tier, limitReached } = store.snapshot().auth;
     // Clear the block once the tier is pro (the upgrade landed).
@@ -364,28 +370,30 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (!existsSync(examplePath)) {
       return c.json({ error: "no .env.example at that path" }, 400);
     }
-    // Freemium gate — BEFORE any provisioning. Committing a project is the unit the
-    // free tier is metered on: hit the SERVER-SIDE counter (reinstall can't reset it).
-    // Not signed in → hard 401 (the sign-in gate should have caught it). allowed:false
-    // → block, flag limit-reached so the dashboard opens the upgrade modal, don't enter
-    // the cockpit. Pro → the server returns allowed:true (unlimited).
+    // Freemium gate — APP EDITION ONLY, BEFORE any provisioning. Committing a project is
+    // the unit the free tier is metered on: hit the SERVER-SIDE counter (reinstall can't
+    // reset it). Not signed in → hard 401. allowed:false → block, flag limit-reached so
+    // the dashboard opens the upgrade modal, don't enter the cockpit. Pro → allowed:true
+    // (unlimited). In `oss` this whole block is skipped: unlimited, no control-plane call.
     // ponytail: increments once per project activation; if switching away and back
     // must not re-count, dedupe server-side by project id.
-    const session = getSession();
-    if (!session) return c.json({ error: "not signed in" }, 401);
-    try {
-      const usage = await recordUsage(session.token);
-      store.setAuth({
-        ...store.snapshot().auth,
-        usage: { projectsProvisioned: usage.projectsProvisioned, freeLimit: usage.freeLimit },
-      });
-      if (!usage.allowed) {
-        store.setLimitReached(true);
-        return c.json({ error: "free limit reached", ...usage }, 402);
+    if (isApp) {
+      const session = getSession();
+      if (!session) return c.json({ error: "not signed in" }, 401);
+      try {
+        const usage = await recordUsage(session.token);
+        store.setAuth({
+          ...store.snapshot().auth,
+          usage: { projectsProvisioned: usage.projectsProvisioned, freeLimit: usage.freeLimit },
+        });
+        if (!usage.allowed) {
+          store.setLimitReached(true);
+          return c.json({ error: "free limit reached", ...usage }, 402);
+        }
+        store.setLimitReached(false);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
-      store.setLimitReached(false);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
     const project = { path: body.path, name: basename(body.path) };
     store.setProject(project);

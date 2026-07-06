@@ -97,6 +97,9 @@ pub fn run() {
                 .sidecar("ringtaild")?
                 .env("PORT", port.to_string())
                 .env("RINGTAIL_SERVE_DIST", dashboard_dist.to_string_lossy().to_string())
+                // The native app is the GATED edition: sign-in wall + freemium + upgrade.
+                // `ringtail up` from source omits this → defaults to `oss` (fully free).
+                .env("RINGTAIL_EDITION", "app")
                 .spawn()?;
             app.state::<Sidecar>().0.lock().unwrap().replace(child);
 
