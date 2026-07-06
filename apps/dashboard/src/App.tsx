@@ -1,5 +1,6 @@
 import type { DaemonSnapshot } from "@ringtail/core";
 import {
+  AccountView,
   ActionsPanel,
   Badge,
   Button,
@@ -25,6 +26,7 @@ import {
   approveAction,
   checkout,
   fixtureSnapshot,
+  openBillingPortal,
   refreshEntitlement,
   sendChat,
   setAgent,
@@ -49,6 +51,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<DaemonSnapshot>(fixtureSnapshot);
   const [live, setLive] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
 
   useEffect(() => {
     return subscribeLive(
@@ -103,6 +106,10 @@ export function App() {
             live={live}
             email={gated && snapshot.auth.signedIn ? snapshot.auth.email : undefined}
             onSignOut={gated && snapshot.auth.signedIn ? () => void signOut() : undefined}
+            onAccount={
+              gated && snapshot.auth.signedIn ? () => setShowAccount((v) => !v) : undefined
+            }
+            accountActive={showAccount}
           />
           <Reveal delay={40}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -112,37 +119,55 @@ export function App() {
             </div>
           </Reveal>
 
-          {live && signedIn && typeof screen === "number" && (
+          {/* Account view — app edition only, opened from the header. Presentational
+              @ringtail/ui component fed off the SSE auth snapshot; onManageBilling proxies
+              the daemon's /api/portal, onSignOut is the existing sign-out. */}
+          {gated && snapshot.auth.signedIn && showAccount ? (
             <Reveal delay={80}>
-              <Stepper step={screen} />
+              <AccountView
+                tier={snapshot.auth.tier ?? "free"}
+                email={snapshot.auth.email ?? ""}
+                expiresAt={snapshot.auth.expiresAt}
+                usage={snapshot.auth.usage ?? { projectsProvisioned: 0, freeLimit: 1 }}
+                onManageBilling={() => void openBillingPortal()}
+                onSignOut={() => void signOut()}
+              />
             </Reveal>
+          ) : (
+            <>
+              {live && signedIn && typeof screen === "number" && (
+                <Reveal delay={80}>
+                  <Stepper step={screen} />
+                </Reveal>
+              )}
+
+              {/* key on screen → the reveal spring replays on every gate transition */}
+              <Reveal key={screen} delay={120}>
+                {screen === "signin" && (
+                  <SignInCard onSendCode={(e) => signIn(e)} onVerify={(e, o) => verifyOtp(e, o)} />
+                )}
+
+                {screen === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
+
+                {screen === 2 && (
+                  <ChooseProject
+                    agentName={snapshot.agent?.name}
+                    onChoose={(path) => void setProject(path)}
+                    onBack={() => void setAgent(null)}
+                  />
+                )}
+
+                {screen === 3 && (
+                  <Cockpit
+                    snapshot={snapshot}
+                    live={live}
+                    onSwitchProject={() => void setProject(null)}
+                    onSwitchAgent={() => void setAgent(null)}
+                  />
+                )}
+              </Reveal>
+            </>
           )}
-
-          {/* key on screen → the reveal spring replays on every gate transition */}
-          <Reveal key={screen} delay={120}>
-            {screen === "signin" && (
-              <SignInCard onSendCode={(e) => signIn(e)} onVerify={(e, o) => verifyOtp(e, o)} />
-            )}
-
-            {screen === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
-
-            {screen === 2 && (
-              <ChooseProject
-                agentName={snapshot.agent?.name}
-                onChoose={(path) => void setProject(path)}
-                onBack={() => void setAgent(null)}
-              />
-            )}
-
-            {screen === 3 && (
-              <Cockpit
-                snapshot={snapshot}
-                live={live}
-                onSwitchProject={() => void setProject(null)}
-                onSwitchAgent={() => void setAgent(null)}
-              />
-            )}
-          </Reveal>
         </div>
       </div>
 
@@ -361,10 +386,14 @@ function Header({
   live,
   email,
   onSignOut,
+  onAccount,
+  accountActive,
 }: {
   live: boolean;
   email?: string;
   onSignOut?: () => void;
+  onAccount?: () => void;
+  accountActive?: boolean;
 }) {
   return (
     <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24 }}>
@@ -398,6 +427,26 @@ function Header({
         <TrustIndicator />
         {onSignOut && (
           <span style={{ fontFamily: font.mono, fontSize: 11, color: "var(--ink-soft)" }}>
+            {onAccount && (
+              <>
+                <button
+                  type="button"
+                  onClick={onAccount}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    font: "inherit",
+                    color: accountActive ? "var(--amber-deep)" : "var(--ink-soft)",
+                    textDecoration: "underline",
+                  }}
+                >
+                  {accountActive ? "← cockpit" : "account"}
+                </button>
+                {" · "}
+              </>
+            )}
             {email ? `${email} · ` : ""}
             <button
               type="button"

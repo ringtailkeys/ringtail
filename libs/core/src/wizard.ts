@@ -165,6 +165,8 @@ export interface AuthState {
   tier?: "free" | "pro";
   /** The SERVER-SIDE provision count that gates the free tier (reinstall can't reset it). */
   usage?: { projectsProvisioned: number; freeLimit: number };
+  /** ISO date the Pro subscription renews — surfaced on the account view (never a token). */
+  expiresAt?: string;
   /** Set when the last /api/usage returned allowed:false → the dashboard opens the upgrade modal. */
   limitReached?: boolean;
 }

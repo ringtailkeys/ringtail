@@ -17,7 +17,14 @@ import { serveStatic } from "hono/bun";
 import { clearSession, getSession, listRootAccounts, putRoot, putSession } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
-import { createCheckout, getEntitlement, recordUsage, sendOtp, verifyOtp } from "./control-plane";
+import {
+  createCheckout,
+  createPortalSession,
+  getEntitlement,
+  recordUsage,
+  sendOtp,
+  verifyOtp,
+} from "./control-plane";
 import { buildMcpServer } from "./mcp";
 import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
@@ -40,7 +47,13 @@ async function refreshAuth(store: DaemonStore): Promise<void> {
   }
   try {
     const ent = await getEntitlement(session.token);
-    store.setAuth({ signedIn: true, email: ent.email, tier: ent.tier, usage: ent.usage });
+    store.setAuth({
+      signedIn: true,
+      email: ent.email,
+      tier: ent.tier,
+      usage: ent.usage,
+      expiresAt: ent.expiresAt,
+    });
   } catch {
     store.setAuth({ signedIn: false });
   }
@@ -214,6 +227,20 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (!session) return c.json({ error: "not signed in" }, 401);
     try {
       return c.json(await createCheckout(session.token));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // POST /api/portal → a Dodo billing-portal session URL (manage/cancel the sub, opened
+  // in-app like checkout). URL only; no secret crosses. App edition + signed-in only.
+  app.post("/api/portal", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    if (!isApp) return c.json({ error: "billing is app-edition only" }, 404);
+    const session = getSession();
+    if (!session) return c.json({ error: "not signed in" }, 401);
+    try {
+      return c.json(await createPortalSession(session.token));
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
