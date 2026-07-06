@@ -35,12 +35,23 @@ export interface RootCredential {
   updatedAt: string;
 }
 
+/** The signed-in control-plane session (Better Auth). The daemon holds this privately
+ * and sends it ONLY to the control-plane (entitlement/usage/checkout) — it is NEVER
+ * surfaced to the agent or the dashboard (only the email/tier are). Persisted so a
+ * reinstall of the daemon keeps you signed in; the free limit is server-side regardless. */
+export interface Session {
+  token: string;
+  email: string;
+}
+
 export interface Store {
   /** Keyed by env-var name (e.g. CLOUDFLARE_API_TOKEN). */
   credentials: Record<string, Credential>;
   /** The global root-key vault, keyed by `provider`(+`:account`). Optional so an
    * existing store without it reads clean. */
   roots?: Record<string, RootCredential>;
+  /** The control-plane session (account sign-in). Optional so an older store reads clean. */
+  session?: Session;
 }
 
 /** Root config dir. `RINGTAIL_HOME` overrides; default ~/.ringtail. */
@@ -57,7 +68,11 @@ export function readStore(): Store {
   if (!existsSync(file)) return { credentials: {} };
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<Store>;
-    return { credentials: parsed.credentials ?? {}, roots: parsed.roots ?? {} };
+    return {
+      credentials: parsed.credentials ?? {},
+      roots: parsed.roots ?? {},
+      ...(parsed.session ? { session: parsed.session } : {}),
+    };
   } catch {
     // ponytail: corrupt/hand-edited file → treat as empty rather than crash;
     // the next write rewrites it clean. Upgrade path: back up + warn if this
@@ -107,6 +122,28 @@ export function resolveRoot(providerAccount: string): string | null {
  * Safe to surface (dashboard "which roots are set"). */
 export function listRootAccounts(): string[] {
   return Object.keys(readStore().roots ?? {});
+}
+
+// ── the control-plane session (account sign-in; daemon-private) ──────────────
+
+/** Persist the signed-in control-plane session (same 0600 file). */
+export function putSession(session: Session): void {
+  const store = readStore();
+  store.session = session;
+  writeStore(store);
+}
+
+/** The stored session, or null if signed out. Daemon-internal — the token is only
+ * ever sent to the control-plane, never surfaced to the agent/dashboard. */
+export function getSession(): Session | null {
+  return readStore().session ?? null;
+}
+
+/** Sign out: drop the stored session. The account's server-side usage is untouched. */
+export function clearSession(): void {
+  const store = readStore();
+  delete store.session;
+  writeStore(store);
 }
 
 /**

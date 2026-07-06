@@ -6,6 +6,8 @@ import {
   ChatPanel,
   Reveal,
   Rocco,
+  SignInCard,
+  UpgradeModal,
   allKeyframes,
   cssVars,
   font,
@@ -21,12 +23,17 @@ import { RootIntake } from "./cockpit/RootIntake";
 import { WizardModal } from "./cockpit/WizardModal";
 import {
   approveAction,
+  checkout,
   fixtureSnapshot,
+  refreshEntitlement,
   sendChat,
   setAgent,
   setProject,
+  signIn,
+  signOut,
   submitStep,
   subscribeLive,
+  verifyOtp,
 } from "./live";
 
 /**
@@ -41,6 +48,7 @@ import {
 export function App() {
   const [snapshot, setSnapshot] = useState<DaemonSnapshot>(fixtureSnapshot);
   const [live, setLive] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   useEffect(() => {
     return subscribeLive(
@@ -52,9 +60,25 @@ export function App() {
     );
   }, []);
 
-  // The onboarding gate. Offline → straight to the cockpit with fixtures (the board
-  // still renders). Live → no-agent = step 1, agent-but-no-project = step 2, both = 3.
-  const step: 1 | 2 | 3 = !live ? 3 : !snapshot.agent ? 1 : !snapshot.project ? 2 : 3;
+  // The freemium block rides the SSE snapshot: when /api/usage returned allowed:false,
+  // the daemon flags limitReached → pop the upgrade modal (the Dodo overlay).
+  useEffect(() => {
+    if (snapshot.auth.limitReached) setUpgradeOpen(true);
+  }, [snapshot.auth.limitReached]);
+
+  // The gate. Offline → straight to the cockpit with fixtures (Storybook/demo). Live:
+  // NOT-signed-in = the sign-in gate (before anything else) → no-agent = ① → no-project
+  // = ② → both = ③. Sign-in comes FIRST: no ①②③ until authenticated.
+  const signedIn = !live || snapshot.auth.signedIn;
+  const screen: "signin" | 1 | 2 | 3 = !live
+    ? 3
+    : !snapshot.auth.signedIn
+      ? "signin"
+      : !snapshot.agent
+        ? 1
+        : !snapshot.project
+          ? 2
+          : 3;
 
   return (
     <>
@@ -70,7 +94,11 @@ export function App() {
         }}
       >
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
-          <Header live={live} />
+          <Header
+            live={live}
+            email={live && signedIn ? snapshot.auth.email : undefined}
+            onSignOut={live && signedIn ? () => void signOut() : undefined}
+          />
           <Reveal delay={40}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               <Badge>MIT</Badge>
@@ -79,17 +107,21 @@ export function App() {
             </div>
           </Reveal>
 
-          {live && (
+          {live && signedIn && typeof screen === "number" && (
             <Reveal delay={80}>
-              <Stepper step={step} />
+              <Stepper step={screen} />
             </Reveal>
           )}
 
-          {/* key on step → the reveal spring replays on every on-ramp transition */}
-          <Reveal key={step} delay={120}>
-            {step === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
+          {/* key on screen → the reveal spring replays on every gate transition */}
+          <Reveal key={screen} delay={120}>
+            {screen === "signin" && (
+              <SignInCard onSendCode={(e) => signIn(e)} onVerify={(e, o) => verifyOtp(e, o)} />
+            )}
 
-            {step === 2 && (
+            {screen === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
+
+            {screen === 2 && (
               <ChooseProject
                 agentName={snapshot.agent?.name}
                 onChoose={(path) => void setProject(path)}
@@ -97,7 +129,7 @@ export function App() {
               />
             )}
 
-            {step === 3 && (
+            {screen === 3 && (
               <Cockpit
                 snapshot={snapshot}
                 live={live}
@@ -108,6 +140,18 @@ export function App() {
           </Reveal>
         </div>
       </div>
+
+      {/* The Dodo upgrade overlay — shared @ringtail/ui component, opened on the
+          server-enforced free-limit block; success re-checks entitlement → unlock. */}
+      <UpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        onUpgraded={() => void refreshEntitlement()}
+        onCheckout={checkout}
+        onPollTier={refreshEntitlement}
+        usage={snapshot.auth.usage}
+        limitReached={snapshot.auth.limitReached}
+      />
     </>
   );
 }
@@ -308,7 +352,15 @@ function Stepper({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
-function Header({ live }: { live: boolean }) {
+function Header({
+  live,
+  email,
+  onSignOut,
+}: {
+  live: boolean;
+  email?: string;
+  onSignOut?: () => void;
+}) {
   return (
     <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24 }}>
       <Rocco pose={live ? "chill" : "waving"} animated size={72} />
@@ -339,6 +391,26 @@ function Header({ live }: { live: boolean }) {
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
         <StatusPill live={live} />
         <TrustIndicator />
+        {onSignOut && (
+          <span style={{ fontFamily: font.mono, fontSize: 11, color: "var(--ink-soft)" }}>
+            {email ? `${email} · ` : ""}
+            <button
+              type="button"
+              onClick={onSignOut}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                font: "inherit",
+                color: "var(--ink-soft)",
+                textDecoration: "underline",
+              }}
+            >
+              sign out
+            </button>
+          </span>
+        )}
       </div>
     </header>
   );

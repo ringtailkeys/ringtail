@@ -2,6 +2,7 @@ import {
   gridSeed,
   type Action,
   type ActiveProject,
+  type AuthState,
   type ChatChoice,
   type ChatMessage,
   type CredentialStatus,
@@ -46,6 +47,9 @@ export class DaemonStore {
    * server nonce so the dashboard can POST it back to /api/action — value-free (NAMES
    * + method + nonce, never a root/minted value). Cleared once approved. */
   #pendingMints: PendingMint[] = [];
+  /** Account/entitlement state (control-plane). Drives the sign-in gate + freemium
+   * enforcement. Value-free: email + tier + a server-side count, never a session token. */
+  #auth: AuthState = { signedIn: false };
   readonly #subs = new Set<Subscriber>();
 
   /** ponytail: returns live refs (mutate-then-emit). Fine single-threaded; the
@@ -59,7 +63,22 @@ export class DaemonStore {
       agent: this.#agent,
       project: this.#project,
       pendingMints: this.#pendingMints,
+      auth: this.#auth,
     };
+  }
+
+  /** Replace the account/entitlement state (after sign-in, sign-out, or an entitlement
+   * refresh). Value-free — the session token is never stored here, only email/tier/usage. */
+  setAuth(auth: AuthState): void {
+    this.#auth = auth;
+    this.#emit();
+  }
+
+  /** Flip the freemium block flag (set true when /api/usage returns allowed:false →
+   * the dashboard opens the upgrade modal; cleared once the user upgrades). */
+  setLimitReached(limitReached: boolean): void {
+    this.#auth = { ...this.#auth, limitReached };
+    this.#emit();
   }
 
   /** Subscribe to state changes; primes the subscriber with the current snapshot. */

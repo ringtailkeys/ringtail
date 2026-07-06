@@ -10,6 +10,11 @@ export const EnvSchema = z.object({
   // Daemon (the machine surface) + dashboard (the human cockpit) ports.
   DAEMON_PORT: z.coerce.number().int().positive().default(4880),
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4881),
+  // The hosted account/billing control-plane the OSS tool CALLS for sign-in +
+  // entitlement (Better Auth + Dodo). The tool ships NO auth/billing of its own —
+  // only email/session/usage-count ever crosses this wire, NEVER a provider secret.
+  // Overridable for self-host/dev; defaults to the prod control-plane.
+  RINGTAIL_CONTROL_PLANE_URL: z.string().url().default("https://ringtail.dev"),
   // Infisical — the secret sink. All optional locally; required to actually sync.
   INFISICAL_CLIENT_ID: z.string().min(1).optional(),
   INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),

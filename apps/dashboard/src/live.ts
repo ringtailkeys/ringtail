@@ -107,6 +107,64 @@ export async function fetchAgents(): Promise<DetectedAgent[]> {
   }
 }
 
+// ── the sign-in GATE + freemium (proxied through the daemon to the control-plane) ──
+// Only an email / one-time code / nothing crosses to the daemon here — never a secret.
+// The daemon holds the account session; the dashboard just drives the gate off SSE.
+
+/** Sign-in phase 1: ask the control-plane (via daemon) to email a one-time code. */
+export async function signIn(email: string): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/signin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `sign-in failed: ${res.status}`);
+}
+
+/** Sign-in phase 2: verify the code → the daemon persists the session + pushes auth over SSE. */
+export async function verifyOtp(email: string, otp: string): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ email, otp }),
+  });
+  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `verify failed: ${res.status}`);
+}
+
+/** Sign out — drop the local session (the account's server-side usage is untouched). */
+export async function signOut(): Promise<void> {
+  const token = await ensureToken();
+  await fetch(`${DAEMON_URL}/api/signout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+/** Open a Dodo overlay checkout session (URL only; the overlay renders in-app). */
+export async function checkout(): Promise<{ url: string }> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/checkout`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`checkout failed: ${res.status}`);
+  return (await res.json()) as { url: string };
+}
+
+/** Re-check entitlement (polled while the Dodo overlay is open, and after upgrade to
+ * unlock). Returns the fresh tier; the daemon also pushes the new auth over SSE. */
+export async function refreshEntitlement(): Promise<"free" | "pro"> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/entitlement/refresh`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return "free";
+  return ((await res.json()) as { tier: "free" | "pro" }).tier;
+}
+
 /** Step 1: commit the connected agent to daemon state (id → advances to step 2).
  * Pass null to disconnect (falls the gate back to step 1). */
 export async function setAgent(id: string | null): Promise<void> {
@@ -202,5 +260,8 @@ export function fixtureSnapshot(): DaemonSnapshot {
     agent: null,
     project: null,
     pendingMints: [],
+    // Offline/Storybook: signed-in so the fixture cockpit renders (the gate needs a
+    // live daemon to enforce sign-in; the daemon-down path is the demo/fixture view).
+    auth: { signedIn: true, tier: "pro" },
   };
 }
