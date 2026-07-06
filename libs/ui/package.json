@@ -1,23 +1,44 @@
 {
   "name": "@ringtail/ui",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
+  "description": "Ringtail \"Night Shift\" design system — tokens, Rocco, spring motion, and on-brand React components (self-contained: react-only, PNG assets inlined).",
+  "license": "MIT",
+  "//": "DEV exports point at raw src so the monorepo (Storybook, Vite, tsconfig paths) consumes source directly. On `npm publish`, publishConfig.exports OVERRIDES `.` to the built ./dist so an EXTERNAL repo (ringtail-site/apps/app) gets compiled ESM + .d.ts with the PNGs inlined. See DISTRIBUTION.md.",
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
-    "react": "^18.3.1"
+  "peerDependencies": {
+    "react": ">=18"
   },
   "devDependencies": {
-    "@types/react": "^18.3.1"
+    "@types/react": "^18.3.1",
+    "react": "^18.3.1"
   },
   "nx": {
     "tags": [
       "type:lib"
     ]
   },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:dist": "tsup"
   }
 }

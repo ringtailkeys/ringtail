@@ -84,3 +84,11 @@ export async function createCheckout(session: string): Promise<{ url: string }> 
   if (!res.ok) throw new Error(`checkout failed: ${res.status}`);
   return (await res.json()) as { url: string };
 }
+
+/** POST /api/portal → a Dodo billing-portal session URL (manage/cancel an active sub).
+ * Session-gated, URL only — no secret crosses this path (check:no-leak stays green). */
+export async function createPortalSession(session: string): Promise<{ url: string }> {
+  const res = await cpFetch("/api/portal", { method: "POST", body: "{}" }, session);
+  if (!res.ok) throw new Error(`portal failed: ${res.status}`);
+  return (await res.json()) as { url: string };
+}

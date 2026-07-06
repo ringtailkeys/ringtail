@@ -161,6 +161,19 @@ export async function checkout(): Promise<{ url: string }> {
   return (await res.json()) as { url: string };
 }
 
+/** Open the Dodo billing portal (manage/cancel the sub). Returns the URL; the daemon
+ * proxies /api/portal → control-plane. The account view opens it in a new tab. */
+export async function openBillingPortal(): Promise<void> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/portal`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`portal failed: ${res.status}`);
+  const { url } = (await res.json()) as { url: string };
+  window.open(url, "_blank", "noopener");
+}
+
 /** Re-check entitlement (polled while the Dodo overlay is open, and after upgrade to
  * unlock). Returns the fresh tier; the daemon also pushes the new auth over SSE. */
 export async function refreshEntitlement(): Promise<"free" | "pro"> {
