@@ -152,6 +152,23 @@ export interface PendingMint {
   varName?: string;
 }
 
+/**
+ * The account/entitlement state, fetched from the hosted control-plane (Better Auth
+ * sign-in + Dodo billing) and streamed to the dashboard so the sign-in GATE and the
+ * freemium enforcement render off the ONE SSE snapshot, same as everything else.
+ * Value-free: email + tier + a server-side usage COUNT — never a session token, never
+ * a provider secret (the daemon holds the session privately; only names/counts surface).
+ */
+export interface AuthState {
+  signedIn: boolean;
+  email?: string;
+  tier?: "free" | "pro";
+  /** The SERVER-SIDE provision count that gates the free tier (reinstall can't reset it). */
+  usage?: { projectsProvisioned: number; freeLimit: number };
+  /** Set when the last /api/usage returned allowed:false → the dashboard opens the upgrade modal. */
+  limitReached?: boolean;
+}
+
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
@@ -161,4 +178,6 @@ export interface DaemonSnapshot {
   project: ActiveProject | null;
   /** Consequential mints the agent proposed, awaiting a human approve (unforgeable nonce). */
   pendingMints: PendingMint[];
+  /** Account/entitlement — drives the sign-in gate + freemium enforcement. */
+  auth: AuthState;
 }

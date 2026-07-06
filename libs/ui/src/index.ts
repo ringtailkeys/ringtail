@@ -17,6 +17,8 @@ export { Card, Eyebrow } from "./card";
 export { Badge } from "./badge";
 export { Spinner, Skeleton, feedbackKeyframes } from "./feedback";
 export { Modal, modalKeyframes } from "./modal";
+export { SignInCard } from "./signin";
+export { UpgradeModal, type UpgradeState } from "./upgrade";
 export { StatusChip, StatusDot, STATUS, statusKeyframes, type CredentialStatus } from "./status";
 export { ChatPanel, ChatChoices, type ChatLine, type ChatChoice } from "./chat";
 export { ActionsPanel, type ActionItem, type ApproveFn } from "./actions";

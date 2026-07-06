@@ -14,13 +14,40 @@ import {
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { listRootAccounts, putRoot } from "@ringtail/store";
+import { clearSession, getSession, listRootAccounts, putRoot, putSession } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
+import {
+  createCheckout,
+  getEntitlement,
+  recordUsage,
+  sendOtp,
+  verifyOtp,
+} from "./control-plane";
 import { buildMcpServer } from "./mcp";
 import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
 import { applyStep } from "./submit";
+
+/**
+ * Pull the account's entitlement from the control-plane using the stored session and
+ * publish it to the dashboard (value-free: email + tier + a server-side count). On any
+ * failure (no session, expired, control-plane down) we fall back to signed-out so the
+ * gate shows sign-in rather than a half-authed cockpit. The session token stays private.
+ */
+async function refreshAuth(store: DaemonStore): Promise<void> {
+  const session = getSession();
+  if (!session) {
+    store.setAuth({ signedIn: false });
+    return;
+  }
+  try {
+    const ent = await getEntitlement(session.token);
+    store.setAuth({ signedIn: true, email: ent.email, tier: ent.tier, usage: ent.usage });
+  } catch {
+    store.setAuth({ signedIn: false });
+  }
+}
 
 /**
  * @ringtail/daemon — the LOCAL machine surface AND the MCP server, in ONE process
@@ -126,6 +153,77 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   // ponytail: loopback-only convenience for P2; real `up` embeds the token in the
   // served HTML instead of exposing this endpoint.
   app.get("/api/session", (c) => c.json({ token }));
+
+  // ── the sign-in GATE + freemium (control-plane) ────────────────────────────
+  // The OSS tool has NO auth of its own — these routes proxy the LOOPBACK dashboard's
+  // request to the hosted control-plane (Better Auth email-OTP + Dodo). Only an email,
+  // a one-time code, or the account session token crosses that wire — NEVER a provider
+  // secret. All token-gated by the loopback session token, like every other /api route.
+
+  // POST /api/signin { email } → the control-plane emails a one-time code. Email only.
+  app.post("/api/signin", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { email?: string };
+    if (!body.email) return c.json({ error: "email required" }, 400);
+    try {
+      await sendOtp(body.email);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // POST /api/verify { email, otp } → verify the code, persist the session PRIVATELY
+  // (never surfaced), then publish the entitlement so the gate opens. The token is
+  // stored to disk (0600) so a reinstall keeps you signed in — the free limit is
+  // server-side regardless.
+  app.post("/api/verify", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { email?: string; otp?: string };
+    if (!body.email || !body.otp) return c.json({ error: "email and otp required" }, 400);
+    try {
+      const sessionToken = await verifyOtp(body.email, body.otp);
+      putSession({ token: sessionToken, email: body.email }); // → disk, never returned
+      await refreshAuth(store);
+      return c.json({ ok: true }); // session token NEVER echoed back
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // POST /api/signout → drop the local session (falls the gate back to sign-in). The
+  // account's server-side usage count is untouched — a reinstall can't reset the limit.
+  app.post("/api/signout", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    clearSession();
+    store.setAuth({ signedIn: false });
+    return c.json({ ok: true });
+  });
+
+  // POST /api/checkout → a Dodo overlay checkout session URL (opened in-app, no new
+  // tab). Returns the URL only; the payment happens in the Dodo overlay, then the
+  // dashboard re-checks entitlement to unlock.
+  app.post("/api/checkout", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const session = getSession();
+    if (!session) return c.json({ error: "not signed in" }, 401);
+    try {
+      return c.json(await createCheckout(session.token));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  // POST /api/entitlement/refresh → re-pull entitlement (after a successful upgrade →
+  // unlock). No body; publishes the fresh tier/usage over SSE.
+  app.post("/api/entitlement/refresh", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    await refreshAuth(store);
+    const { tier, limitReached } = store.snapshot().auth;
+    // Clear the block once the tier is pro (the upgrade landed).
+    if (tier === "pro" && limitReached) store.setLimitReached(false);
+    return c.json({ ok: true, tier: tier ?? "free" });
+  });
 
   // POST /api/step — the BROWSER paste path (architecture.md §"Step kinds · paste").
   // The value flows user → daemon → validate → @ringtail/store, NEVER through the
@@ -266,6 +364,29 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (!existsSync(examplePath)) {
       return c.json({ error: "no .env.example at that path" }, 400);
     }
+    // Freemium gate — BEFORE any provisioning. Committing a project is the unit the
+    // free tier is metered on: hit the SERVER-SIDE counter (reinstall can't reset it).
+    // Not signed in → hard 401 (the sign-in gate should have caught it). allowed:false
+    // → block, flag limit-reached so the dashboard opens the upgrade modal, don't enter
+    // the cockpit. Pro → the server returns allowed:true (unlimited).
+    // ponytail: increments once per project activation; if switching away and back
+    // must not re-count, dedupe server-side by project id.
+    const session = getSession();
+    if (!session) return c.json({ error: "not signed in" }, 401);
+    try {
+      const usage = await recordUsage(session.token);
+      store.setAuth({
+        ...store.snapshot().auth,
+        usage: { projectsProvisioned: usage.projectsProvisioned, freeLimit: usage.freeLimit },
+      });
+      if (!usage.allowed) {
+        store.setLimitReached(true);
+        return c.json({ error: "free limit reached", ...usage }, 402);
+      }
+      store.setLimitReached(false);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
     const project = { path: body.path, name: basename(body.path) };
     store.setProject(project);
     store.setGrid(gridFromExample(examplePath));
@@ -345,6 +466,9 @@ if (import.meta.main) {
     store.setProject({ path: projectPath, name: basename(projectPath) });
     store.setGrid(gridFromExample(join(projectPath, ".env.example")));
   }
+  // Restore a persisted sign-in: pull the account's entitlement so a returning user
+  // lands past the gate (or on sign-in if the session expired). Non-blocking.
+  void refreshAuth(store);
   const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
   const origin = `http://127.0.0.1:${server.port}`;
   // The boot line — MCP URL + session token + dashboard. Bind is 127.0.0.1 only.

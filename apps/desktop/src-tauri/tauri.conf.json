@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://ringtail.dev https://*.dodopayments.com; frame-src 'self' https://checkout.dodopayments.com https://*.dodopayments.com; img-src 'self' data: blob: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
     }
   },
   "bundle": {
