@@ -4,14 +4,16 @@ import {
   Badge,
   Button,
   ChatPanel,
+  Reveal,
+  Rocco,
   allKeyframes,
   cssVars,
   font,
   moonlit,
   radius,
+  roccoLine,
 } from "@ringtail/ui";
 import { Fragment, useEffect, useState } from "react";
-import roccoChill from "../../.brand-assets/rocco-chill.png";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { ChooseProject } from "./cockpit/ChooseProject";
 import { LiveGrid } from "./cockpit/LiveGrid";
@@ -69,32 +71,41 @@ export function App() {
       >
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
           <Header live={live} />
-          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-            <Badge>MIT</Badge>
-            <Badge tone="berry">local-first</Badge>
-            <Badge tone="amber">no telemetry</Badge>
-          </div>
+          <Reveal delay={40}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+              <Badge>MIT</Badge>
+              <Badge tone="berry">local-first</Badge>
+              <Badge tone="amber">no telemetry</Badge>
+            </div>
+          </Reveal>
 
-          {live && <Stepper step={step} />}
-
-          {step === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
-
-          {step === 2 && (
-            <ChooseProject
-              agentName={snapshot.agent?.name}
-              onChoose={(path) => void setProject(path)}
-              onBack={() => void setAgent(null)}
-            />
+          {live && (
+            <Reveal delay={80}>
+              <Stepper step={step} />
+            </Reveal>
           )}
 
-          {step === 3 && (
-            <Cockpit
-              snapshot={snapshot}
-              live={live}
-              onSwitchProject={() => void setProject(null)}
-              onSwitchAgent={() => void setAgent(null)}
-            />
-          )}
+          {/* key on step → the reveal spring replays on every on-ramp transition */}
+          <Reveal key={step} delay={120}>
+            {step === 1 && <ConnectStep onConnect={(id) => void setAgent(id)} />}
+
+            {step === 2 && (
+              <ChooseProject
+                agentName={snapshot.agent?.name}
+                onChoose={(path) => void setProject(path)}
+                onBack={() => void setAgent(null)}
+              />
+            )}
+
+            {step === 3 && (
+              <Cockpit
+                snapshot={snapshot}
+                live={live}
+                onSwitchProject={() => void setProject(null)}
+                onSwitchAgent={() => void setAgent(null)}
+              />
+            )}
+          </Reveal>
         </div>
       </div>
     </>
@@ -106,6 +117,28 @@ export function App() {
 function ConnectStep({ onConnect }: { onConnect: (id: string) => void }) {
   return (
     <div style={{ maxWidth: 620, margin: "0 auto" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 20,
+        }}
+      >
+        <Rocco pose="waving" animated size={128} />
+        <p
+          style={{
+            fontFamily: font.mono,
+            fontSize: 12,
+            color: "var(--ink-soft)",
+            textAlign: "center",
+            margin: 0,
+          }}
+        >
+          “{roccoLine("waving")}”
+        </p>
+      </div>
       <AgentPicker onConnect={onConnect} />
       <div style={{ textAlign: "center" }}>
         <TrustIndicator />
@@ -131,13 +164,15 @@ function Cockpit({
   return (
     <>
       {live && snapshot.project && (
-        <ProjectBar
-          projectName={snapshot.project.name}
-          projectPath={snapshot.project.path}
-          agentName={snapshot.agent?.name}
-          onSwitchProject={onSwitchProject}
-          onSwitchAgent={onSwitchAgent}
-        />
+        <Reveal delay={40}>
+          <ProjectBar
+            projectName={snapshot.project.name}
+            projectPath={snapshot.project.path}
+            agentName={snapshot.agent?.name}
+            onSwitchProject={onSwitchProject}
+            onSwitchAgent={onSwitchAgent}
+          />
+        </Reveal>
       )}
       {live && <RootIntake live={live} />}
       <LiveGrid grid={snapshot.grid} />
@@ -150,11 +185,19 @@ function Cockpit({
           alignItems: "start",
         }}
       >
-        <ActionsPanel
-          actions={snapshot.actions}
-          onApprove={live ? (id, confirmed) => void approveAction(id, confirmed) : undefined}
-        />
-        <ChatPanel messages={snapshot.chat} onSend={live ? sendChat : undefined} disabled={!live} />
+        <Reveal delay={140}>
+          <ActionsPanel
+            actions={snapshot.actions}
+            onApprove={live ? (id, confirmed) => void approveAction(id, confirmed) : undefined}
+          />
+        </Reveal>
+        <Reveal delay={200}>
+          <ChatPanel
+            messages={snapshot.chat}
+            onSend={live ? sendChat : undefined}
+            disabled={!live}
+          />
+        </Reveal>
       </div>
       {snapshot.wizard && (
         <WizardModal wizard={snapshot.wizard} onSubmit={live ? submitStep : undefined} />
@@ -268,13 +311,7 @@ function Stepper({ step }: { step: 1 | 2 | 3 }) {
 function Header({ live }: { live: boolean }) {
   return (
     <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24 }}>
-      <img
-        src={roccoChill}
-        alt="Rocco, the Ringtail bandit"
-        width={72}
-        height={72}
-        style={{ borderRadius: radius.md }}
-      />
+      <Rocco pose={live ? "chill" : "waving"} animated size={72} />
       <div style={{ flex: 1 }}>
         <h1
           style={{

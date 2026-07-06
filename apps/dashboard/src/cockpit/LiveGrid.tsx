@@ -1,5 +1,5 @@
 import type { GridRow } from "@ringtail/core";
-import { StatusChip, font } from "@ringtail/ui";
+import { ANIM_CLASS, StatusChip, font, revealStyle } from "@ringtail/ui";
 import { GRID_ENVS } from "../live";
 
 /**
@@ -24,8 +24,12 @@ export function LiveGrid({ grid }: { grid: GridRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {grid.map((row) => (
-            <tr key={row.provider} style={{ borderTop: "1px solid var(--line)" }}>
+          {grid.map((row, i) => (
+            <tr
+              key={row.provider}
+              className={ANIM_CLASS}
+              style={{ borderTop: "1px solid var(--line)", ...revealStyle(i * 60 + 60) }}
+            >
               <td style={{ padding: "14px 12px" }}>
                 <div style={{ fontFamily: font.ui, fontWeight: 600, color: "var(--ink)" }}>
                   {row.provider}

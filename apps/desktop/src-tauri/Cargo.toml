@@ -1,0 +1,33 @@
+[package]
+name = "ringtail-desktop"
+version = "0.1.0"
+description = "Ringtail — your keys, raided · washed · stashed. Native desktop shell."
+authors = ["Ringtail"]
+edition = "2021"
+rust-version = "1.77"
+
+# The Tauri app is a lib (the shared entry) + a thin bin, so both `tauri dev` and
+# `tauri build` and any future test harness link the same code.
+[lib]
+name = "ringtail_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon → the menu-bar Rocco; image-png → decode the icon we hand the tray.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Spawn + supervise the compiled daemon as a bundled sidecar.
+tauri-plugin-shell = "2"
+# NSVisualEffect (macOS) + Mica/Acrylic (Windows) — one crate, both platforms.
+window-vibrancy = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

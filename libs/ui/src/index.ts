@@ -21,4 +21,5 @@ export { StatusChip, StatusDot, STATUS, statusKeyframes, type CredentialStatus }
 export { ChatPanel, ChatChoices, type ChatLine, type ChatChoice } from "./chat";
 export { ActionsPanel, type ActionItem, type ApproveFn } from "./actions";
 export { Rocco, roccoLine, type RoccoPose } from "./rocco";
+export { Reveal, revealStyle, animKeyframes, ANIM_CLASS, type AnimKind } from "./anim";
 export { allKeyframes } from "./keyframes";
