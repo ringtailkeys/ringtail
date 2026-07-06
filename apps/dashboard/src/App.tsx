@@ -60,19 +60,24 @@ export function App() {
     );
   }, []);
 
-  // The freemium block rides the SSE snapshot: when /api/usage returned allowed:false,
-  // the daemon flags limitReached → pop the upgrade modal (the Dodo overlay).
-  useEffect(() => {
-    if (snapshot.auth.limitReached) setUpgradeOpen(true);
-  }, [snapshot.auth.limitReached]);
+  // The paywall (sign-in wall + freemium + upgrade) lives ONLY in the native app edition.
+  // In `oss` (`ringtail up` from source) the daemon streams edition:"oss" → the dashboard
+  // renders ①②③ directly, fully ungated. The gate is a conditional layer, not a fork.
+  const gated = live && snapshot.edition === "app";
 
-  // The gate. Offline → straight to the cockpit with fixtures (Storybook/demo). Live:
-  // NOT-signed-in = the sign-in gate (before anything else) → no-agent = ① → no-project
-  // = ② → both = ③. Sign-in comes FIRST: no ①②③ until authenticated.
-  const signedIn = !live || snapshot.auth.signedIn;
+  // The freemium block rides the SSE snapshot: when /api/usage returned allowed:false,
+  // the daemon flags limitReached → pop the upgrade modal (the Dodo overlay). App only.
+  useEffect(() => {
+    if (gated && snapshot.auth.limitReached) setUpgradeOpen(true);
+  }, [gated, snapshot.auth.limitReached]);
+
+  // The gate. Offline OR oss → straight to ①②③/cockpit (no sign-in wall). App edition &
+  // live: NOT-signed-in = the sign-in gate (before anything else) → no-agent = ① →
+  // no-project = ② → both = ③. Sign-in comes FIRST: no ①②③ until authenticated.
+  const signedIn = !gated || snapshot.auth.signedIn;
   const screen: "signin" | 1 | 2 | 3 = !live
     ? 3
-    : !snapshot.auth.signedIn
+    : gated && !snapshot.auth.signedIn
       ? "signin"
       : !snapshot.agent
         ? 1
@@ -96,8 +101,8 @@ export function App() {
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
           <Header
             live={live}
-            email={live && signedIn ? snapshot.auth.email : undefined}
-            onSignOut={live && signedIn ? () => void signOut() : undefined}
+            email={gated && snapshot.auth.signedIn ? snapshot.auth.email : undefined}
+            onSignOut={gated && snapshot.auth.signedIn ? () => void signOut() : undefined}
           />
           <Reveal delay={40}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>

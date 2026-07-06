@@ -180,4 +180,8 @@ export interface DaemonSnapshot {
   pendingMints: PendingMint[];
   /** Account/entitlement — drives the sign-in gate + freemium enforcement. */
   auth: AuthState;
+  /** Which edition the daemon runs. `oss` (default, `ringtail up` from source) → the
+   * dashboard renders ①②③ directly, NO sign-in wall, NO upgrade modal. `app` (native
+   * desktop) → the full gated experience. The gate is a conditional layer, not a fork. */
+  edition: "oss" | "app";
 }
