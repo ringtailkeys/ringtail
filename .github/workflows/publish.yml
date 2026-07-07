@@ -51,6 +51,69 @@ jobs:
       - name: Build the tarball artifacts
         run: cd packages/cli && bun run prepack
 
+      # ── Clean-install smoke gate (fail-closed) ──────────────────────────────
+      # WHY THIS EXISTS: ringtailkeys@0.1.0 shipped BROKEN — its package.json carried
+      # `workspace:*` RUNTIME deps that npm can't resolve, so a stranger's
+      # `npm i ringtailkeys` failed. Every other gate (typecheck/lint/tests/tag-match)
+      # PASSED because NOTHING ever installed the packed tarball in a clean env. This
+      # step packs the tarball, installs it in a throwaway dir OUTSIDE the workspace,
+      # boots the installed bin, and health-checks the daemon. ANY failure exits
+      # non-zero → the job fails → `npm publish` below NEVER runs. The pipeline
+      # pack-installs and boots the tarball before publishing; a broken install blocks
+      # the release. See packages/cli/PUBLISH.md.
+      - name: Smoke — pack, clean-install & boot the tarball before publishing
+        run: |
+          set -euo pipefail
+          cd packages/cli
+          VERSION=$(node -p "require('./package.json').version")
+          npm pack
+          TGZ="$PWD/ringtailkeys-${VERSION}.tgz"
+          test -f "$TGZ"
+
+          # CHECK 4 — cheap direct guard on the exact 0.1.0 failure: the packed
+          # package.json must carry NO runtime `dependencies` using the `workspace:`
+          # protocol. Any such value → exit 1 → gate fails → no publish.
+          tar -xzO -f "$TGZ" package/package.json | node -e '
+            const p = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const bad = Object.entries(p.dependencies || {})
+              .filter(([, v]) => String(v).includes("workspace:"));
+            if (bad.length) {
+              console.error("REFUSE: workspace: protocol in runtime dependencies:", bad);
+              process.exit(1);
+            }
+            console.log("ok: no workspace: protocol in runtime dependencies");
+          '
+
+          # CHECK 2 — a real stranger install: fresh temp dir OUTSIDE the package.
+          # A `workspace:*` (or any unresolvable) dep makes `npm i` exit non-zero →
+          # set -e fails the job → no publish. Then assert the bin was actually linked.
+          TMP=$(mktemp -d)
+          cd "$TMP"
+          npm init -y >/dev/null
+          npm i "$TGZ"
+          test -x node_modules/.bin/ringtail
+
+          # CHECK 3 — boot smoke: run the INSTALLED bin (shebang uses bun, already set
+          # up above), parse the origin it prints, curl the daemon /health, assert
+          # {"ok":true}, then stop it. If the daemon never comes up within the window,
+          # exit 1 → job fails → no publish. `up` picks a free port, so we parse the
+          # printed `http://127.0.0.1:<port>` rather than assume one.
+          node_modules/.bin/ringtail up >up.log 2>&1 &
+          BIN_PID=$!
+          cleanup() { kill "$BIN_PID" 2>/dev/null || true; pkill -P "$BIN_PID" 2>/dev/null || true; }
+          trap cleanup EXIT   # if: always()-safe — bg proc killed on both pass and fail
+          for _ in $(seq 1 30); do
+            ORIGIN=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' up.log | head -1 || true)
+            if [ -n "${ORIGIN:-}" ] && curl -fsS "$ORIGIN/health" | grep -q '"ok":true'; then
+              echo "ok: daemon healthy at $ORIGIN"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "REFUSE: installed bin's daemon never answered /health — smoke FAILED"
+          echo "----- up.log -----"; cat up.log
+          exit 1
+
       # OIDC Trusted Publishing: no NODE_AUTH_TOKEN, no secret. npm exchanges the
       # workflow's OIDC token for a short-lived publish grant automatically.
       - name: Publish to npm (provenance)
