@@ -1,6 +1,6 @@
 {
   "name": "ringtailkeys",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "The 4th bucket, worked as a CLI: `ringtail`, the terminal you (or your coding agent) drive. Reads the project's .env.example manifest via @ringtail/core and prints the provisioning plan; `ringtail up` boots the BUNDLED daemon (dist/daemon.js) + serves the prebuilt dashboard + MCP on one origin; `--json` is agent mode (emits what's MISSING, never secret values). Published as `ringtailkeys` with bin `ringtail`. bun bundles src/cli.ts → dist/cli.js AND services/daemon → dist/daemon.js (esbuild HANGS on this machine — bun only). type:package → imports libs only (@ringtail/core, @ringtail/config); terminal — nothing internal consumes it.",
   "type": "module",
   "bin": {
