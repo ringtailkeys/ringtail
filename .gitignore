@@ -13,3 +13,7 @@ storybook-static/
 .DS_Store
 .tilt/
 tilt_modules/
+
+# Local ImmorTerm tool runtime state (rewritten constantly — never commit)
+.immorterm/*
+!.immorterm/project.json
