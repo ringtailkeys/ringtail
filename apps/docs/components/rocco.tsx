@@ -5,8 +5,9 @@ import type { CSSProperties } from "react";
  * transparent sticker PNG floats directly on the page (no cream tile / border / shadow),
  * with just a subtle tilt + the per-pose idle loop. Rebuilt in plain CSS because
  * @ringtail/ui is a different (React-18) build we can't import here. Static-export safe:
- * no hooks, no server APIs, just an <img> off /public/rocco. Idle loops live in
- * app/global.css and flatten under prefers-reduced-motion.
+ * no hooks, no server APIs, just an <img> off /public/rocco. Rocco is STATIC by default —
+ * no autoplay motion anywhere. The per-pose loop is gated behind :hover only (keyframes in
+ * app/global.css, driven by the --rocco-loop var) and flattens under prefers-reduced-motion.
  */
 export type RoccoPose = "chill" | "working" | "success" | "error" | "mindblown" | "waving";
 
@@ -20,7 +21,7 @@ const CAPTIONS: Record<RoccoPose, string> = {
   waving: "hey. i'm rocco. i raid the token pages so you don't.",
 };
 
-/** Idle loop per pose (keyframes in global.css). Undefined → no motion. */
+/** Per-pose loop (keyframes in global.css) — applied on :hover only. Undefined → no motion. */
 const LOOP: Partial<Record<RoccoPose, string>> = {
   waving: "rocco-wave 2.6s ease infinite",
   success: "rocco-cheer 2.4s ease infinite",
@@ -43,7 +44,7 @@ export function Rocco({
   size?: number;
   /** Subtle -2deg sticker tilt on the transparent PNG. Off for clean inline (nav). */
   tilt?: boolean;
-  /** Run the pose's idle loop (wave/cheer/shake/float). Reduced-motion flattens it. */
+  /** Wire the pose's loop to :hover (static at rest — never autoplays). Reduced-motion flattens it. */
   animated?: boolean;
   /** Show Rocco's deadpan line for this pose beneath the tile. */
   caption?: boolean;
@@ -51,21 +52,25 @@ export function Rocco({
   side?: boolean;
   style?: CSSProperties;
 }) {
+  const hoverLoop = animated ? LOOP[pose] : undefined;
   const img = (
     <img
       src={`/rocco/rocco-${pose}.png`}
       alt={`Rocco the raccoon mascot, ${pose}`}
       width={size}
       height={size}
-      className={animated ? "rocco-anim" : undefined}
-      style={{
-        display: "block",
-        width: size,
-        height: size,
-        objectFit: "contain",
-        transformOrigin: "bottom center",
-        animation: animated ? LOOP[pose] : undefined,
-      }}
+      className={hoverLoop ? "rocco-anim" : undefined}
+      style={
+        {
+          display: "block",
+          width: size,
+          height: size,
+          objectFit: "contain",
+          transformOrigin: "bottom center",
+          // Static by default: the loop is exposed as a var and only runs on :hover (global.css).
+          "--rocco-loop": hoverLoop,
+        } as CSSProperties
+      }
     />
   );
 
