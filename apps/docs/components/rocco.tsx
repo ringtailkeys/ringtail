@@ -1,12 +1,12 @@
 import type { CSSProperties } from "react";
 
 /**
- * Rocco — the night-shift bandit mascot, dropped into the docs. Flat sticker PNG on a
- * cream die-cut tile, thin accent border, soft shadow, slight tilt — mirrors the framed
- * treatment from libs/ui/src/rocco.tsx, rebuilt in plain CSS because @ringtail/ui is a
- * different (React-18) build we can't import here. Static-export safe: no hooks, no
- * server APIs, just an <img> off /public/rocco. Idle loops live in app/global.css and
- * flatten under prefers-reduced-motion.
+ * Rocco — the night-shift bandit mascot, dropped into the docs. Background-free: the
+ * transparent sticker PNG floats directly on the page (no cream tile / border / shadow),
+ * with just a subtle tilt + the per-pose idle loop. Rebuilt in plain CSS because
+ * @ringtail/ui is a different (React-18) build we can't import here. Static-export safe:
+ * no hooks, no server APIs, just an <img> off /public/rocco. Idle loops live in
+ * app/global.css and flatten under prefers-reduced-motion.
  */
 export type RoccoPose = "chill" | "working" | "success" | "error" | "mindblown" | "waving";
 
@@ -33,16 +33,16 @@ const LOOP: Partial<Record<RoccoPose, string>> = {
 export function Rocco({
   pose = "chill",
   size = 116,
-  framed = true,
   animated = true,
   caption = false,
   side = false,
+  tilt = true,
   style,
 }: {
   pose?: RoccoPose;
   size?: number;
-  /** Cream die-cut tile with accent border + soft shadow + slight tilt. */
-  framed?: boolean;
+  /** Subtle -2deg sticker tilt on the transparent PNG. Off for clean inline (nav). */
+  tilt?: boolean;
   /** Run the pose's idle loop (wave/cheer/shake/float). Reduced-motion flattens it. */
   animated?: boolean;
   /** Show Rocco's deadpan line for this pose beneath the tile. */
@@ -69,19 +69,11 @@ export function Rocco({
     />
   );
 
-  const tile = framed ? (
-    <span
-      style={{
-        display: "inline-block",
-        background: "#fffdf8",
-        borderRadius: 14,
-        border: "2px solid var(--color-fd-primary)",
-        boxShadow: "0 6px 18px rgba(0,0,0,0.14)",
-        padding: Math.round(size * 0.06),
-        lineHeight: 0,
-        transform: "rotate(-2deg)",
-      }}
-    >
+  // Background-free: the transparent PNG sits directly on the page. Optional subtle
+  // tilt lives on a bare wrapper (no bg/border/shadow) so the idle-loop transform on
+  // the <img> itself isn't clobbered.
+  const sticker = tilt ? (
+    <span style={{ display: "inline-block", lineHeight: 0, transform: "rotate(-2deg)" }}>
       {img}
     </span>
   ) : (
@@ -101,7 +93,7 @@ export function Rocco({
 
   return (
     <span style={{ ...wrapStyle, maxWidth: caption ? size + 40 : undefined }}>
-      {tile}
+      {sticker}
       {caption && (
         <span
           style={{
