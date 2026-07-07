@@ -1,0 +1,3 @@
+# Cloudflare Pages edge redirects. Copied verbatim into the exported `out/` dir.
+# The site is all docs — send the root at the Quickstart before any HTML is served.
+/    /docs    302

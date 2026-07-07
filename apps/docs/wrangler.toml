@@ -1,0 +1,6 @@
+# Cloudflare Pages config for @ringtail/docs → docs.ringtailkeys.com
+# `next build` with `output: "export"` (see next.config.mjs) emits a fully static
+# site into `out/`; Pages serves that directory directly, no Functions/runtime.
+name = "ringtail-docs"
+pages_build_output_dir = "out"
+compatibility_date = "2025-07-01"

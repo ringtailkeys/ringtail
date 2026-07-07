@@ -16,7 +16,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <RootProvider>{children}</RootProvider>
+        {/* `type: "static"` → the search dialog fetches the prebuilt index from
+            /api/search (fumadocs staticGET) and searches client-side. Required for
+            the static export; without it the dialog would hit a live search server. */}
+        <RootProvider search={{ options: { type: "static" } }}>{children}</RootProvider>
       </body>
     </html>
   );

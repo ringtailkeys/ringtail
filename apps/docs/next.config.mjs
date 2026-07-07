@@ -10,6 +10,11 @@ const withMDX = createMDX();
 /** @type {import('next').NextConfig} */
 const config = {
   reactStrictMode: true,
+  // Fully static site → Cloudflare Pages serves the exported `out/` dir with no
+  // runtime. Every route is prerendered: `/docs/[[...slug]]` via generateStaticParams,
+  // and search via fumadocs' staticGET (see app/api/search/route.ts). See DEPLOY.md.
+  output: "export",
+  // `next dev` ignores `output: export`, so Tilt local preview is unaffected.
 };
 
 export default withMDX(config);
