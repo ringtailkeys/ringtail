@@ -1,10 +1,16 @@
 # Publishing the `ringtailkeys` CLI
 
 Package name **`ringtailkeys`**, bin **`ringtail`** (both verified free on npm).
-`private: true` stays in `package.json` — publishing is a deliberate action taken
-from the **Tilt `npm-publish` button**, never a bare `npm publish`.
 
-## The published path (off-clone) — now solved
+Releases are **hands-free**: press the Tilt **`release`** button → it bumps + tags +
+pushes → the pushed `v*` tag fires **`.github/workflows/publish.yml`** → the Action
+publishes to npm via **OIDC Trusted Publishing**. **No npm token lives anywhere** —
+not on your machine, not in a GitHub secret. There is no local `npm publish` (esbuild
+HANGS on this mac; the Action builds + publishes on a Linux runner).
+
+Requires **npm ≥ 11.5** for Trusted Publishing (the Action installs `npm@latest`).
+
+## The published path (off-clone)
 
 ```bash
 npx ringtailkeys up          # or: npm i -g ringtailkeys && ringtail up
@@ -15,7 +21,7 @@ pointed at the **prebuilt dashboard** (`dist/dashboard`). One process, one origi
 the daemon serves the dashboard + `/api` + `/events` + `/mcp` and prints the MCP
 URL + bearer token. No repo, no build step, no network fetch of code.
 
-## The clone path (dev) — still works
+## The clone path (dev)
 
 ```bash
 git clone https://github.com/ringtailkeys/ringtail
@@ -23,48 +29,66 @@ cd ringtail && bun install
 bun packages/cli/src/index.ts up
 ```
 
-Off a clone there is no `dist/daemon.js` next to the source, so `up` falls back to
-the repo walk: boot the daemon from `services/daemon/src/index.ts` and build
-`apps/dashboard/dist` once (gitignored → a fresh clone has none; 5-min timeout,
-then a clear error).
+Off a clone there is no `dist/daemon.js`, so `up` falls back to the repo walk: boot
+the daemon from `services/daemon/src/index.ts` and build `apps/dashboard/dist` once.
 
 ## How the tarball is built (`prepack`)
 
 `bun run prepack` produces everything the published package ships, all with **bun's
-bundler** (esbuild's native binary HANGS on this machine — verified — so it is not
-used anywhere in this package):
+bundler** (esbuild's native binary HANGS on the dev mac — verified; the CI runner is
+Linux, where esbuild is fine, but `prepack` uses bun there too for consistency):
 
-- `build`       → `bun build src/cli.ts → dist/cli.js` (bin, `#!/usr/bin/env bun`).
-- `build:daemon`→ `bun build services/daemon/src/index.ts → dist/daemon.js`, a
-  standalone bundle (libs + hono + zod + MCP SDK all inlined). This crosses the
-  `type:package → service` boundary on purpose but via a **build-time bundle**, not
-  a workspace import — nothing in `src/` imports the daemon, so the boundary lint
-  stays green.
-- `build:dashboard` → Vite-builds `apps/dashboard` and copies it to
-  `dist/dashboard`.
+- `build`        → `bun build src/cli.ts → dist/cli.js` (bin, `#!/usr/bin/env bun`).
+- `build:daemon` → `bun build services/daemon/src/index.ts → dist/daemon.js`, a
+  standalone bundle (libs + hono + zod + MCP SDK inlined). Crosses the
+  `type:package → service` boundary via a **build-time bundle**, not a workspace
+  import — nothing in `src/` imports the daemon, so the boundary lint stays green.
+- `build:dashboard` → Vite-builds `apps/dashboard` → `dist/dashboard`.
 
 `files: ["dist"]` ships only the built artifacts.
 
-At runtime `up` prefers the bundled `dist/daemon.js` + `dist/dashboard`; the
-repo-walk (`findRepoRoot`) is the DEV/clone-only fallback.
+---
 
-## Publishing: the Tilt `npm-publish` button
+## ONE-TIME bootstrap (do this once, before the button ever works)
 
-Manual resource (`auto_init=False`, `TRIGGER_MODE_MANUAL`, label `infra`) in
-`.devops/Tiltfile`. Click it to run, in order:
+Trusted Publishing can only link to a package that **already exists** on npm, so
+version `0.1.0` must be published by hand first, from a machine where esbuild works
+(a Linux box or CI-equivalent — NOT the dev mac where it hangs):
 
-1. **preflight** — `nx run-many -t typecheck lint`, `check:no-leak`, and the cli
-   tests must be green; PLUS a version guard that refuses to publish if
-   `package.json` version already equals `npm view ringtailkeys version` (no
-   clobber / no re-publish of an existing version).
-2. **build** — `bun run build && bun run build:daemon && bun run build:dashboard`
-   (the same artifacts `prepack` makes).
-3. **publish** — `npm publish --access public` (uses your local `npm login`; also
-   honors `NPM_TOKEN` / an `.npmrc` if present). `private:true` in the checked-in
-   `package.json` is dropped for the publish so this stays the ONLY way to ship.
-4. **smoke** — `npm view ringtailkeys`, then in a scratch dir
-   `npx -y ringtailkeys up --json` (agent dry-run) against the PUBLISHED tarball —
-   proves the off-clone install boots.
+```bash
+cd packages/cli
+bun run prepack                         # build cli + daemon + dashboard bundles
+npm publish --access public --otp=<6-digit-2FA>
+```
 
-Bump `version` in `package.json` before clicking (the preflight version guard
-enforces it).
+Then **link the Trusted Publisher** on npm (this is what removes the need for a token):
+
+1. Sign in on **npmjs.com** → go to the package **`ringtailkeys`**.
+2. **Settings** → **Trusted Publisher** → **Add / GitHub Actions**.
+3. Fill in:
+   - **Organization / user**: `ringtailkeys`
+   - **Repository**: `ringtail`  (i.e. `ringtailkeys/ringtail`)
+   - **Workflow filename**: `publish.yml`
+   - **Environment**: leave blank (the workflow declares no `environment:`).
+4. Save. From now on GitHub Actions running `publish.yml` in that repo can publish
+   `ringtailkeys` **without any token** — npm verifies the workflow's OIDC identity.
+
+## The ongoing flow (every release after the bootstrap)
+
+1. Be on **`master`** with a **clean working tree**.
+2. Press the Tilt **`release`** button (or **`release-minor`** for a feature bump).
+   It runs the preflight (typecheck + lint + no-leak + cli tests + clean-tree +
+   on-master), then `npm version patch|minor --tag-version-prefix=v`, then
+   `git push --follow-tags`.
+3. The pushed `v<x>` tag fires **`publish.yml`**, which: checks out, sets up Bun +
+   Node with `npm@latest`, guards that the tag matches `packages/cli/package.json`
+   version, runs `bun run prepack`, then
+   `npm publish --provenance --access public` — **no token**, OIDC does the exchange.
+4. Watch the repo **Actions** tab. Provenance is attested automatically.
+
+For a **major** bump there's no button — run it by hand, then push:
+
+```bash
+cd packages/cli && npm version major --tag-version-prefix=v -m "release: ringtailkeys v%s"
+git push --follow-tags
+```

@@ -167,43 +167,50 @@ local_resource(
 # Infra (manual cockpit buttons — deliberate one-shot ops, never on boot)
 # =============================================================================
 
-# npm-publish — the ONE button that ships `ringtailkeys` to npm. Mirrors the
-# site's cockpit deploy-resource: preflight → build → publish → smoke, each stage
-# gates the next (chained with &&, first failure aborts). Manual only.
-#   preflight — typecheck+lint (nx) · no-leak · cli tests must be green, PLUS a
-#     version guard: refuse if package.json version == the version already on npm
-#     (no clobber / no accidental re-publish).
-#   build     — bun-bundles cli.js + daemon.js + the dashboard dist (esbuild HANGS
-#     on this machine — bun only; see packages/cli/PUBLISH.md).
-#   publish   — `npm publish --access public` (local `npm login`; honors NPM_TOKEN /
-#     .npmrc if present). package.json stays `private:true` in git; the button drops
-#     it only for the publish, then restores it — so a bare `npm publish` can't ship.
-#   smoke     — `npm view` + a scratch-dir `npx -y ringtailkeys up --json` dry-run
-#     against the PUBLISHED tarball, proving the off-clone install boots.
-NPM_PUBLISH = (
-    'cd ' + REPO_ROOT + ' && ' +
-    'echo "-- preflight -----------------------------------------" && ' +
-    BUN + ' run check && ' +
-    BUN + ' run check:no-leak && ' +
-    '( cd packages/cli && ' + BUN + ' test ) && ' +
-    'LOCAL=$(node -p "require(\'./packages/cli/package.json\').version") && ' +
-    'PUBLISHED=$(npm view ringtailkeys version 2>/dev/null || echo none) && ' +
-    'echo "version: local=$LOCAL published=$PUBLISHED" && ' +
-    'if [ "$LOCAL" = "$PUBLISHED" ]; then ' +
-    'echo "REFUSE: v$LOCAL already on npm - bump packages/cli/package.json version first"; exit 1; fi && ' +
-    'echo "-- build (cli + daemon + dashboard bundles) ----------" && ' +
-    '( cd packages/cli && ' + BUN + ' run build && ' + BUN + ' run build:daemon && ' + BUN + ' run build:dashboard ) && ' +
-    'echo "-- publish (npm publish --access public) -------------" && ' +
-    '( cd packages/cli && npm pkg delete private && ' +
-    '( npm publish --access public; RC=$?; npm pkg set private=true --json; exit $RC ) ) && ' +
-    'echo "-- smoke (published tarball, off-clone) --------------" && ' +
-    'npm view ringtailkeys && ' +
-    'SMOKE=$(mktemp -d) && ( cd "$SMOKE" && npx -y ringtailkeys up --json ) && rm -rf "$SMOKE" && ' +
-    'echo "published + smoke-tested ringtailkeys@$LOCAL"'
+# release — the ONE button that ships `ringtailkeys` to npm. It does NOT publish
+# locally (esbuild HANGS on this mac + no npm token should live here). Instead it
+# bumps + tags + pushes; the pushed `v*` tag fires .github/workflows/publish.yml,
+# which publishes on a Linux runner via OIDC Trusted Publishing (no stored token).
+# Manual only; each stage gates the next (&&, first failure aborts).
+#   preflight — typecheck+lint (nx) · no-leak · cli tests green, PLUS: clean git
+#     working tree AND on `master` (a release must be a reproducible commit).
+#   bump      — `npm version <patch|minor>` in packages/cli: writes the new version,
+#     commits it, and tags `v<x>` (--tag-version-prefix=v so it matches publish.yml's
+#     `v*` trigger). Refuses on a dirty tree by design.
+#   push      — `git push --follow-tags` sends the commit + tag → fires the Action.
+# See packages/cli/PUBLISH.md for the one-time Trusted-Publisher bootstrap.
+def release_cmd(bump):
+    return (
+        'cd ' + REPO_ROOT + ' && ' +
+        'echo "-- preflight -----------------------------------------" && ' +
+        'if [ "$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then ' +
+        'echo "REFUSE: releases go from master (on $(git rev-parse --abbrev-ref HEAD))"; exit 1; fi && ' +
+        'if [ -n "$(git status --porcelain)" ]; then ' +
+        'echo "REFUSE: working tree not clean - commit or stash first"; exit 1; fi && ' +
+        BUN + ' run check && ' +
+        BUN + ' run check:no-leak && ' +
+        '( cd packages/cli && ' + BUN + ' test ) && ' +
+        'echo "-- bump + tag (npm version ' + bump + ') --------------------" && ' +
+        '( cd packages/cli && npm version ' + bump + ' --tag-version-prefix=v -m "release: ringtailkeys v%s" ) && ' +
+        'NEW=$(node -p "require(\'./packages/cli/package.json\').version") && ' +
+        'echo "-- push (fires publish.yml) --------------------------" && ' +
+        'git push --follow-tags && ' +
+        'echo "Released v$NEW - GitHub Action is publishing to npm (watch the repo Actions tab)."'
+    )
+
+# release (patch) is the default. release-minor for a feature bump; for a major,
+# run `cd packages/cli && npm version major --tag-version-prefix=v` by hand then
+# `git push --follow-tags` (same tag → same Action).
+local_resource(
+    'release',
+    cmd=release_cmd('patch'),
+    auto_init=False,
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    labels=['infra'],
 )
 local_resource(
-    'npm-publish',
-    cmd=NPM_PUBLISH,
+    'release-minor',
+    cmd=release_cmd('minor'),
     auto_init=False,
     trigger_mode=TRIGGER_MODE_MANUAL,
     labels=['infra'],
@@ -220,8 +227,9 @@ print("""
   CLI:       build/watch — no URL (packages/cli → dist/cli.js)
 
   Flows (click in the Tilt UI): tunnel · build-prod
-  Infra (click in the Tilt UI): npm-publish  → ships `ringtailkeys` to npm
-                                (preflight · build · publish · smoke)
+  Infra (click in the Tilt UI): release / release-minor  → bump · tag · push;
+                                the pushed v* tag fires publish.yml, which
+                                publishes `ringtailkeys` via OIDC (no token here)
   Portless proxy: install with `npm install -g portless` (starts automatically).
 ================================================================================
 """)

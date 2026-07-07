@@ -1,7 +1,6 @@
 {
   "name": "ringtailkeys",
   "version": "0.1.0",
-  "private": true,
   "description": "The 4th bucket, worked as a CLI: `ringtail`, the terminal you (or your coding agent) drive. Reads the project's .env.example manifest via @ringtail/core and prints the provisioning plan; `ringtail up` boots the BUNDLED daemon (dist/daemon.js) + serves the prebuilt dashboard + MCP on one origin; `--json` is agent mode (emits what's MISSING, never secret values). Published as `ringtailkeys` with bin `ringtail`. bun bundles src/cli.ts → dist/cli.js AND services/daemon → dist/daemon.js (esbuild HANGS on this machine — bun only). type:package → imports libs only (@ringtail/core, @ringtail/config); terminal — nothing internal consumes it.",
   "type": "module",
   "bin": {
@@ -37,7 +36,7 @@
     "bun-types": "^1.1.34",
     "typescript": "^5.7.0"
   },
-  "$publishConfig_comment": "`private: true` stays — publishing happens via the Tilt `npm-publish` button (drops private at publish time / uses `npm publish --access public`), NOT from a bare `npm publish` here. The button ships `dist/` (cli.js + daemon.js + dashboard/) to npm as `ringtailkeys`, installing the `ringtail` bin. `types` points at source; a real publish adds `tsc --emitDeclarationOnly` for dist/index.d.ts if a consumer ever needs it.",
+  "$publishConfig_comment": "No `private` flag: this package IS meant to be published. Accidental publishes are prevented not by `private` but by (a) the Tilt `release` button's clean-tree + on-master preflight and (b) publish.yml's guard that the pushed v* tag must equal this version. Publishing runs ONLY in CI via OIDC Trusted Publishing (no npm token anywhere) — press the Tilt `release` button → it bumps+tags+pushes → the tag fires publish.yml → `npm publish --provenance --access public`. Ships `dist/` (cli.js + daemon.js + dashboard/) as `ringtailkeys`, installing the `ringtail` bin. `types` points at source; a real publish adds `tsc --emitDeclarationOnly` for dist/index.d.ts if a consumer ever needs it.",
   "nx": {
     "tags": [
       "type:package"
