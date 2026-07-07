@@ -126,12 +126,14 @@ local_resource(
 # Packages (shipped to third parties — built/watched, NEVER served → no portless)
 # =============================================================================
 
-# cli — @ringtail/cli. esbuild bundles src/cli.ts → dist/cli.js (the `ringtail`
-# bin). Tilt watches packages/cli/src and rebuilds on change (build/watch); nothing
-# serves it.
+# cli — the `ringtailkeys` package (bin `ringtail`). bun bundles src/cli.ts →
+# dist/cli.js (esbuild HANGS on this machine — bun only). Tilt watches
+# packages/cli/src and rebuilds on change (build/watch); nothing serves it. The
+# published tarball ALSO ships dist/daemon.js + dist/dashboard — those are built by
+# `prepack` / the npm-publish button, not on every dev keystroke.
 local_resource(
     'cli',
-    cmd='cd ' + REPO_ROOT + ' && ' + BUN + ' --filter @ringtail/cli build',
+    cmd='cd ' + REPO_ROOT + ' && ' + BUN + ' --filter ringtailkeys build',
     deps=[REPO_ROOT + '/packages/cli/src'],
     labels=['packages'],
 )
@@ -161,6 +163,52 @@ local_resource(
     labels=['flows'],
 )
 
+# =============================================================================
+# Infra (manual cockpit buttons — deliberate one-shot ops, never on boot)
+# =============================================================================
+
+# npm-publish — the ONE button that ships `ringtailkeys` to npm. Mirrors the
+# site's cockpit deploy-resource: preflight → build → publish → smoke, each stage
+# gates the next (chained with &&, first failure aborts). Manual only.
+#   preflight — typecheck+lint (nx) · no-leak · cli tests must be green, PLUS a
+#     version guard: refuse if package.json version == the version already on npm
+#     (no clobber / no accidental re-publish).
+#   build     — bun-bundles cli.js + daemon.js + the dashboard dist (esbuild HANGS
+#     on this machine — bun only; see packages/cli/PUBLISH.md).
+#   publish   — `npm publish --access public` (local `npm login`; honors NPM_TOKEN /
+#     .npmrc if present). package.json stays `private:true` in git; the button drops
+#     it only for the publish, then restores it — so a bare `npm publish` can't ship.
+#   smoke     — `npm view` + a scratch-dir `npx -y ringtailkeys up --json` dry-run
+#     against the PUBLISHED tarball, proving the off-clone install boots.
+NPM_PUBLISH = (
+    'cd ' + REPO_ROOT + ' && ' +
+    'echo "-- preflight -----------------------------------------" && ' +
+    BUN + ' run check && ' +
+    BUN + ' run check:no-leak && ' +
+    '( cd packages/cli && ' + BUN + ' test ) && ' +
+    'LOCAL=$(node -p "require(\'./packages/cli/package.json\').version") && ' +
+    'PUBLISHED=$(npm view ringtailkeys version 2>/dev/null || echo none) && ' +
+    'echo "version: local=$LOCAL published=$PUBLISHED" && ' +
+    'if [ "$LOCAL" = "$PUBLISHED" ]; then ' +
+    'echo "REFUSE: v$LOCAL already on npm - bump packages/cli/package.json version first"; exit 1; fi && ' +
+    'echo "-- build (cli + daemon + dashboard bundles) ----------" && ' +
+    '( cd packages/cli && ' + BUN + ' run build && ' + BUN + ' run build:daemon && ' + BUN + ' run build:dashboard ) && ' +
+    'echo "-- publish (npm publish --access public) -------------" && ' +
+    '( cd packages/cli && npm pkg delete private && ' +
+    '( npm publish --access public; RC=$?; npm pkg set private=true --json; exit $RC ) ) && ' +
+    'echo "-- smoke (published tarball, off-clone) --------------" && ' +
+    'npm view ringtailkeys && ' +
+    'SMOKE=$(mktemp -d) && ( cd "$SMOKE" && npx -y ringtailkeys up --json ) && rm -rf "$SMOKE" && ' +
+    'echo "published + smoke-tested ringtailkeys@$LOCAL"'
+)
+local_resource(
+    'npm-publish',
+    cmd=NPM_PUBLISH,
+    auto_init=False,
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    labels=['infra'],
+)
+
 print("""
 ================================================================================
                      RINGTAIL LOCAL DEVELOPMENT (Portless)
@@ -172,6 +220,8 @@ print("""
   CLI:       build/watch — no URL (packages/cli → dist/cli.js)
 
   Flows (click in the Tilt UI): tunnel · build-prod
+  Infra (click in the Tilt UI): npm-publish  → ships `ringtailkeys` to npm
+                                (preflight · build · publish · smoke)
   Portless proxy: install with `npm install -g portless` (starts automatically).
 ================================================================================
 """)

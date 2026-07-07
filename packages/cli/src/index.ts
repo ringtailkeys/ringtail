@@ -140,13 +140,21 @@ async function up(json: boolean, projectPath?: string): Promise<number> {
   if (!requireBun()) return 1;
 
   // Two ways to find what `up` serves + boots, in priority order:
-  //  1. PREBUILT (published / after `bun run build`): this package ships the built
-  //     dashboard at <pkg>/dist/dashboard — no repo, no build step for a consumer.
-  //  2. DEV / clone fallback: walk up to the monorepo root, serve apps/dashboard/dist
-  //     (building it once if missing — it's gitignored, so a fresh clone has none).
+  //  1. PREBUILT (published / after `bun run build`): this package ships a BUNDLED
+  //     daemon at <pkg>/dist/daemon.js AND the built dashboard at <pkg>/dist/dashboard
+  //     — no repo, no build step for a consumer (the published-package path).
+  //  2. DEV / clone fallback: walk up to the monorepo root, boot the daemon from
+  //     source (services/daemon/src/index.ts) + serve apps/dashboard/dist (building it
+  //     once if missing — it's gitignored, so a fresh clone has none).
   const bundledDist = join(import.meta.dir, "dashboard"); // dist/dashboard next to cli.js
+  const bundledDaemon = join(import.meta.dir, "daemon.js"); // dist/daemon.js next to cli.js
   const root = findRepoRoot(import.meta.dir);
-  const daemonEntry = root ? join(root, "services/daemon/src/index.ts") : null;
+  // Prefer the bundled daemon; the repo-walk is the DEV/clone fallback only.
+  const daemonEntry = existsSync(bundledDaemon)
+    ? bundledDaemon
+    : root
+      ? join(root, "services/daemon/src/index.ts")
+      : null;
   let distDir = existsSync(join(bundledDist, "index.html"))
     ? bundledDist
     : root
@@ -154,11 +162,13 @@ async function up(json: boolean, projectPath?: string): Promise<number> {
       : null;
 
   if (!daemonEntry || !distDir) {
-    // No prebuilt bundle AND not inside a clone — nothing to boot. Until the package
-    // ships a bundled daemon (see PUBLISH.md), `up` needs the monorepo clone.
+    // No prebuilt bundle AND not inside a clone — nothing to boot. A PUBLISHED install
+    // always ships dist/daemon.js + dist/dashboard, so this only fires from a broken
+    // checkout. See packages/cli/PUBLISH.md.
     console.error(
-      "Could not locate the ringtail daemon. Run `up` from a clone of the monorepo " +
-        "(git clone https://github.com/ringtailkeys/ringtail). See packages/cli/PUBLISH.md.",
+      "Could not locate the ringtail daemon. Reinstall `ringtailkeys`, or run `up` from " +
+        "a clone of the monorepo (git clone https://github.com/ringtailkeys/ringtail). " +
+        "See packages/cli/PUBLISH.md.",
     );
     return 1;
   }
