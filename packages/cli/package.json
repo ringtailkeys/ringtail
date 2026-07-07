@@ -37,5 +37,10 @@
     "tags": [
       "type:package"
     ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ringtailkeys/ringtail.git",
+    "directory": "packages/cli"
   }
 }
