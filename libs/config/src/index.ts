@@ -19,7 +19,7 @@ export const EnvSchema = z.object({
   // entitlement (Better Auth + Dodo). The tool ships NO auth/billing of its own —
   // only email/session/usage-count ever crosses this wire, NEVER a provider secret.
   // Overridable for self-host/dev; defaults to the prod control-plane.
-  RINGTAIL_CONTROL_PLANE_URL: z.string().url().default("https://ringtail.dev"),
+  RINGTAIL_CONTROL_PLANE_URL: z.string().url().default("https://ringtailkeys.com"),
   // Infisical — the secret sink. All optional locally; required to actually sync.
   INFISICAL_CLIENT_ID: z.string().min(1).optional(),
   INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),

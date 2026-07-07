@@ -24,6 +24,8 @@
   },
   "scripts": {
     "build": "esbuild src/cli.ts --bundle --format=esm --platform=node --outfile=dist/cli.js && chmod +x dist/cli.js",
+    "build:dashboard": "(cd ../../apps/dashboard && bun run build) && rm -rf dist/dashboard && cp -r ../../apps/dashboard/dist dist/dashboard",
+    "prepack": "bun run build && bun run build:dashboard",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
