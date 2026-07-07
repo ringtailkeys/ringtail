@@ -41,7 +41,7 @@ the anti-orb at once — run by one very competent raccoon, not a slate-grey ent
 secrets locker.
 
 *(Naming note: `Vault`, `Bandit`, and `Stash` are all taken in the dev space; a
-raccoon-cousin whose tail = keyring is genuinely ownable. `ringtail.dev` /
+raccoon-cousin whose tail = keyring is genuinely ownable. `ringtailkeys.com` /
 `getringtail.com` are the realistic homes. Confidence high on differentiation and
 virality; moderate on exact `.com` availability.)*
 
