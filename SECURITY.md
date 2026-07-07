@@ -55,8 +55,8 @@ handling of the key after mint.
 It's OSS — don't trust us, read it. The whole guarantee is a small surface:
 
 ```bash
-# 1. Read the enforcement (~200 lines): the MCP tools + the leak-guard test.
-$EDITOR services/daemon/src/index.ts services/daemon/src/no-leak.test.ts
+# 1. Read the enforcement (~800 lines): the MCP tool surface + the leak-guard test.
+$EDITOR services/daemon/src/mcp.ts services/daemon/src/no-leak.test.ts
 
 # 2. Run the guard. It fails loudly if any value ever reaches the agent.
 bun run check:no-leak
@@ -70,7 +70,8 @@ critical bug — please report it (below).
 
 ## Reporting a vulnerability
 
-Please **do not** open a public issue for a security report. Email the maintainers via the
-contact on **[ringtailkeys.com](https://ringtailkeys.com)** with steps to reproduce. We aim
-to acknowledge within 72 hours. Because the leak-guard is the product's spine, a confirmed
-break of THE GUARANTEE is treated as top severity.
+Please **do not** open a public issue for a security report. Use GitHub's
+[private vulnerability reporting](https://github.com/ringtailkeys/ringtail/security/advisories/new)
+(the repo's **Security → Report a vulnerability** tab), or email **security@ringtailkeys.com**,
+with steps to reproduce. We aim to acknowledge within 72 hours. Because the leak-guard is the
+product's spine, a confirmed break of THE GUARANTEE is treated as top severity.

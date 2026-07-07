@@ -15,14 +15,20 @@ promise — see [The guarantee](/docs/concepts/the-guarantee).
 
 ## Run it
 
+Ringtail isn't published to a package registry yet — run it from the repo:
+
 ```bash
-npx ringtail
+git clone https://github.com/ringtailkeys/ringtail
+cd ringtail
+bun install
+bun packages/cli/src/index.ts up
 ```
 
-`npx ringtail` (`ringtail up`) boots the local daemon, opens the dashboard, and detects the
-coding-agent CLIs on your PATH. Nothing is installed globally; nothing phones home.
+`… up` boots the local daemon, opens the dashboard, and detects the coding-agent CLIs on your
+PATH. Nothing is installed globally; nothing phones home. (Drop `up` to just print the plan.)
 
-Hacking on the repo instead? Use Tilt — never `tilt up` directly:
+Want the full dev environment (daemon + dashboard + docs + storybook)? Use Tilt — never
+`tilt up` directly:
 
 ```bash
 bun install

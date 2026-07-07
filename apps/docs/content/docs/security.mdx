@@ -5,7 +5,7 @@ description: The guarantee, the threat model, how to audit it yourself, and how 
 
 Ringtail is a credentials tool, so trust is the product. This page states the one guarantee it
 lives or dies by, the threat model behind it, and how you can audit it yourself in a few
-minutes. It mirrors [`SECURITY.md`](https://github.com/ringtailkeys/ringtail/blob/main/SECURITY.md)
+minutes. It mirrors [`SECURITY.md`](https://github.com/ringtailkeys/ringtail/blob/master/SECURITY.md)
 in the repo.
 
 ## The guarantee
@@ -35,15 +35,17 @@ Concretely, we defend against:
 
 Out of scope: an attacker with local root on your machine (they can read `~/.ringtail`
 directly — that's the OS's trust boundary, not the agent's), and the provider's own handling of
-the key after mint.
+the key after mint. For exactly where those keys sit and how to revoke them, see
+[Where your root keys live](/docs/concepts/where-keys-live); for why a root key can only ever
+reach its provider's own host, see [The domain allowlist](/docs/concepts/allowlist).
 
 ## Audit it yourself
 
 It's OSS — don't trust us, read it. The whole guarantee is a small surface:
 
 ```bash
-# 1. Read the enforcement (~200 lines): the MCP tools + the leak-guard test.
-$EDITOR services/daemon/src/index.ts services/daemon/src/no-leak.test.ts
+# 1. Read the enforcement (~800 lines): the MCP tool surface + the leak-guard test.
+$EDITOR services/daemon/src/mcp.ts services/daemon/src/no-leak.test.ts
 
 # 2. Run the guard. It fails loudly if any value ever reaches the agent.
 bun run check:no-leak
@@ -57,7 +59,8 @@ bug — please report it.
 
 ## Reporting a vulnerability
 
-**Do not** open a public issue for a security report. Email the maintainers via the contact on
-[ringtailkeys.com](https://ringtailkeys.com) with steps to reproduce. We aim to acknowledge
-within 72 hours. Because the leak-guard is the product's spine, a confirmed break of the
-guarantee is treated as top severity.
+**Do not** open a public issue for a security report. Use GitHub's
+[private vulnerability reporting](https://github.com/ringtailkeys/ringtail/security/advisories/new)
+(the repo's **Security → Report a vulnerability** tab), or email **security@ringtailkeys.com**,
+with steps to reproduce. We aim to acknowledge within 72 hours. Because the leak-guard is the
+product's spine, a confirmed break of the guarantee is treated as top severity.

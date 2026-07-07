@@ -1,0 +1,63 @@
+---
+title: Where your root keys live
+description: The honest answer — root keys sit in a 0600 plaintext file at ~/.ringtail/credentials.json on your machine, and how to revoke or remove them.
+---
+
+The single most common question about a credentials tool is *where do my keys end up?*
+Here's the honest, no-hand-waving answer.
+
+## The file
+
+Your **root keys** — the master tokens that mint everything else (your Cloudflare token,
+your Neon key, …) — live in **one plaintext JSON file on your own machine**:
+
+```text
+~/.ringtail/credentials.json
+```
+
+It is **not encrypted at rest.** It's a plain file, the same shape as `~/.aws/credentials`.
+What protects it is Unix file permissions, enforced on **every** write (a loose `umask`
+can't widen them):
+
+- the directory `~/.ringtail` is `0700` (only your user can enter it),
+- the file `credentials.json` is `0600` (only your user can read or write it).
+
+A root credential is stored **once, globally** — the same Cloudflare token is reused across
+every repo you set up, so it lives here rather than scattered per-project. Per-project values
+(the keys Rocco mints for a specific app) go to that repo's `.env.local` and Infisical.
+
+<Callout type="warn">
+Anyone with local OS access to your user account — or root on the box — can read this file
+directly. That is the OS's trust boundary, not the agent's: it's the same exposure as your
+`~/.aws`, `~/.ssh`, or `~/.config` secrets. Ringtail's guarantee is that **your coding agent
+never sees these values** ([The guarantee](/docs/concepts/the-guarantee)); it is not a claim
+to defend against a local attacker who already owns your machine.
+</Callout>
+
+## What is *not* here
+
+- **No cloud copy.** Ringtail has zero telemetry and no phone-home. The only network targets
+  are the local daemon and the real provider APIs — root keys never leave your disk except to
+  the provider's own allowlisted host ([Allowlist](/docs/concepts/allowlist)).
+- **No agent copy.** The daemon holds the file; the agent orchestrates over MCP and receives
+  key **names** and statuses only.
+
+## Revoke or remove your keys
+
+There is no background service and no hidden state — removing your keys is deleting a file:
+
+```bash
+# Remove everything Ringtail has stored (root keys + your account session).
+rm ~/.ringtail/credentials.json
+
+# Or remove the whole directory.
+rm -rf ~/.ringtail
+```
+
+That erases Ringtail's copy. It does **not** invalidate the tokens at the provider — Ringtail
+can't un-mint a key it handed you. To fully revoke a leaked or retired key, **rotate or delete
+it in that provider's own dashboard** (Cloudflare, Neon, Resend, …), then re-run Ringtail to
+mint a fresh one.
+
+To uninstall entirely: delete `~/.ringtail` as above and remove the repo clone. Nothing is
+installed globally, so there's nothing else to clean up.

@@ -9,11 +9,16 @@ cockpit streams progress.
 
 ## Dashboard-first
 
+Ringtail isn't published to a package registry yet — run it from the repo:
+
 ```bash
-npx ringtail
+git clone https://github.com/ringtailkeys/ringtail
+cd ringtail
+bun install
+bun packages/cli/src/index.ts up
 ```
 
-`ringtail up` boots the daemon, opens the dashboard, and **auto-detects agent CLIs on your
+`… up` boots the daemon, opens the dashboard, and **auto-detects agent CLIs on your
 PATH** — `claude`, `codex`, `cursor`, `gemini`. Pick one and the cockpit hands you the exact
 command that registers this daemon as its MCP server, with the URL and session token filled
 in. Paste it into the agent and it starts driving.

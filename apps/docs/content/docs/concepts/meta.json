@@ -3,6 +3,8 @@
   "pages": [
     "four-layers",
     "the-guarantee",
+    "where-keys-live",
+    "allowlist",
     "project-scoping",
     "generative-ui",
     "daemon-mcp"

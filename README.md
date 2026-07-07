@@ -12,21 +12,27 @@ The anti-vault: instead of a cold enterprise locker you fill by hand, a competen
 goes and gets the keys for you — while your agent conducts and **never sees a single value.**
 
 Canonical home: **[ringtailkeys.com](https://ringtailkeys.com)** · Docs:
-**[docs.ringtailkeys.com](https://docs.ringtailkeys.com)** · CLI: `ringtail` · npm scope:
-`@ringtail`
+**[docs.ringtailkeys.com](https://docs.ringtailkeys.com)** · CLI: `ringtail`
 
 ---
 
 ## Quickstart
 
+Ringtail isn't published to a package registry yet — run it from the repo:
+
 ```bash
-npx ringtail
+git clone https://github.com/ringtailkeys/ringtail
+cd ringtail
+bun install
+bun packages/cli/src/index.ts up
 ```
 
-`npx ringtail` (`ringtail up`) boots the local **daemon**, opens the **dashboard**, and detects
-the coding-agent CLIs on your PATH. Nothing installs globally; nothing phones home.
+`… up` boots the local **daemon**, opens the **dashboard**, and detects the coding-agent CLIs
+on your PATH. Nothing installs globally; nothing phones home. (Run the bare command without
+`up` — `bun packages/cli/src/index.ts` — to just print the plan.)
 
-Hacking on this repo instead? Use Tilt — never `tilt up` directly:
+Want the full dev environment (daemon + dashboard + docs + storybook)? Use Tilt — never
+`tilt up` directly:
 
 ```bash
 bun install

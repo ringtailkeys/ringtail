@@ -1,0 +1,54 @@
+---
+title: The domain allowlist
+description: The structural floor of the trust model — a root key can only ever be sent to its provider's own vetted host, so the agent can never redirect it to an arbitrary URL.
+---
+
+The allowlist is the strongest defense in the codebase, and until now it was invisible in the
+docs. This is where it lives and what's on it.
+
+## Why it exists
+
+Your coding agent proposes the actions that use a root key (mint a new token, call a provider
+API). It is **untrusted** — assume it could be prompt-injected or hostile. So the question is:
+*what stops the agent from pointing a root key at `evil.example.com` and exfiltrating it?*
+
+The answer is the **domain allowlist**: a root key can **only** be sent to a host that Ringtail
+has vetted for that specific provider. The agent authors the action, but the executor checks
+the destination against the allowlist **before** it resolves the root key or makes any HTTP
+call. A non-allowlisted host is rejected — the key is never even loaded. Exfiltration is
+structurally impossible, regardless of what the agent writes.
+
+It's **data, not code**: adding a provider is one row, never a scripted recipe.
+
+## What's on it
+
+The current allowlist (from `libs/core/src/allowlist.ts`):
+
+| Provider | Allowed host(s) |
+| --- | --- |
+| `resend` | `api.resend.com` |
+| `posthog` | `us.posthog.com`, `app.posthog.com` |
+| `neon` | `console.neon.tech` |
+| `cloudflare` | `api.cloudflare.com` |
+| `creem` | `api.creem.io` |
+| `better-auth` | *(none — mints locally, no external API; no host may carry its secret)* |
+
+Host matching is **exact hostname** (port and path are ignored). A token bound to `resend`
+reaches `api.resend.com` and nothing else — not a subdomain, not a look-alike.
+
+<Callout type="info">
+There's also a `mock` provider bound to loopback (`localhost` / `127.0.0.1`) used by the
+offline test harness. It ships **off**: because your coding agent runs on the same machine, a
+live loopback allowance would be an SSRF surface, so it's only enabled when the test harness
+sets `RINGTAIL_ALLOW_MOCK=1`. It is never active in a real run.
+</Callout>
+
+## How the gate runs
+
+Before any provider call, the executor runs one check — is this URL's hostname on the
+provider's allowed list? If not (unknown provider, empty list, or off-list host), the action
+is **rejected before the root key is resolved**. And a redirect (`3xx`) off the allowlisted
+host is **not followed** — the root can never ride a `Location:` header to an off-allowlist hop.
+
+This is the "structural floor" referenced throughout [The guarantee](/docs/concepts/the-guarantee):
+the agent can conduct, but it can never redirect a secret off its provider's own front door.

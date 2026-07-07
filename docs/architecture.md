@@ -50,7 +50,7 @@ A Hono daemon is the single local host. It:
 - **Security (non-negotiable for a creds tool):** bind `127.0.0.1` only; mint a **session token** on `ringtail up`, required on every MCP call + shared with the dashboard and the registered agent; Origin/CSRF checks. A stdio→HTTP shim (`ringtail mcp-stdio`) bridges stdio-only clients without forking state.
 
 ## Entry & agent selection (OpenDesign pattern)
-- **Dashboard-first:** `npx ringtail` (`ringtail up`) → boots the daemon → opens the dashboard → **auto-detects agent CLIs on PATH** (claude · codex · cursor · gemini) → you pick one (or "guided/manual") → Ringtail registers + spawns it with the task + the MCP URL+token → it drives; the dashboard streams progress and surfaces consent.
+- **Dashboard-first:** `ringtail up` (from a clone: `bun packages/cli/src/index.ts up`) → boots the daemon → opens the dashboard → **auto-detects agent CLIs on PATH** (claude · codex · cursor · gemini) → you pick one (or "guided/manual") → Ringtail registers + spawns it with the task + the MCP URL+token → it drives; the dashboard streams progress and surfaces consent.
 - **Agent-first:** already in Claude Code → `claude mcp add ringtail --transport http http://127.0.0.1:<port>/mcp --header "Authorization: Bearer <token>"` → "set up my keys." Dashboard opens as the visual surface.
 
 ## The env axis

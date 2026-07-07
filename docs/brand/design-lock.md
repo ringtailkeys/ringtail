@@ -102,7 +102,7 @@ visible.
 - **Section titles:** Clash Display `clamp(1.75rem, 4vw, 2.5rem)`.
 - **Body:** Satoshi, 16–18px, line-height 1.6.
 - **Eyebrows / labels / kbd / status:** JetBrains Mono, 12–13px, uppercase,
-  `letter-spacing 0.08em`. (e.g. `01 — HOW HE WORKS`, `$ npx ringtail raid`,
+  `letter-spacing 0.08em`. (e.g. `01 — HOW HE WORKS`, `$ ringtail up`,
   `✓ scope validated`.)
 - **Code blocks:** JetBrains Mono on `--surface`/graveyard, warm syntax tint. The
   `.env.example` manifest and the "wrote to .env.local + Infisical" lines are hero copy.
