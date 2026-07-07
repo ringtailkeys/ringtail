@@ -49,7 +49,10 @@ import {
  */
 export function App() {
   const [snapshot, setSnapshot] = useState<DaemonSnapshot>(fixtureSnapshot);
-  const [live, setLive] = useState(false);
+  // Three-state connection: "connecting" (first paint on every `up`) → "live" on the
+  // first SSE snapshot, or "down" if we NEVER reached the daemon. Fixtures render ONLY
+  // in "down" (daemon-not-running / Storybook), never during the initial connect race.
+  const [conn, setConn] = useState<"connecting" | "live" | "down">("connecting");
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
 
@@ -57,11 +60,16 @@ export function App() {
     return subscribeLive(
       (snap) => {
         setSnapshot(snap);
-        setLive(true);
+        setConn("live");
       },
-      () => setLive(false),
+      // onDown: only fall to fixtures if we NEVER connected. A post-live SSE blip
+      // (EventSource auto-reconnects) must NOT regress a live session to fixtures —
+      // keep the last live snapshot; the next snapshot re-confirms "live".
+      () => setConn((c) => (c === "connecting" ? "down" : c)),
     );
   }, []);
+
+  const live = conn === "live";
 
   // The paywall (sign-in wall + freemium + upgrade) lives ONLY in the native app edition.
   // In `oss` (`ringtail up` from source) the daemon streams edition:"oss" → the dashboard
@@ -103,7 +111,7 @@ export function App() {
       >
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
           <Header
-            live={live}
+            conn={conn}
             email={gated && snapshot.auth.signedIn ? snapshot.auth.email : undefined}
             onSignOut={gated && snapshot.auth.signedIn ? () => void signOut() : undefined}
             onAccount={
@@ -133,6 +141,10 @@ export function App() {
                 onUpgrade={() => setUpgradeOpen(true)}
                 onSignOut={() => void signOut()}
               />
+            </Reveal>
+          ) : conn === "connecting" ? (
+            <Reveal key="connecting" delay={120}>
+              <Connecting />
             </Reveal>
           ) : (
             <>
@@ -383,14 +395,44 @@ function Stepper({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
+// The initial paint on every `up`: an on-brand "connecting" state — NOT the fixture
+// cockpit, and never the word "offline". Rocco waves while the SSE handshake races;
+// the first snapshot flips us to "live" (screen ① agent picker). Root-cause fix: the
+// old boolean `live` started false → flashed the offline fixture cockpit for ~few
+// hundred ms and skipped screen ① entirely.
+function Connecting() {
+  return (
+    <div
+      style={{
+        maxWidth: 620,
+        margin: "0 auto",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12,
+        padding: "48px 0",
+        textAlign: "center",
+      }}
+    >
+      <Rocco pose="waving" animated size={128} />
+      <p style={{ fontFamily: font.ui, fontSize: 16, margin: 0 }}>
+        Connecting to the local daemon…
+      </p>
+      <p style={{ fontFamily: font.mono, fontSize: 12, color: "var(--ink-soft)", margin: 0 }}>
+        detecting your coding agents
+      </p>
+    </div>
+  );
+}
+
 function Header({
-  live,
+  conn,
   email,
   onSignOut,
   onAccount,
   accountActive,
 }: {
-  live: boolean;
+  conn: "connecting" | "live" | "down";
   email?: string;
   onSignOut?: () => void;
   onAccount?: () => void;
@@ -398,7 +440,7 @@ function Header({
 }) {
   return (
     <header style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24 }}>
-      <Rocco pose={live ? "chill" : "waving"} animated size={72} />
+      <Rocco pose={conn === "live" ? "chill" : "waving"} animated size={72} />
       <div style={{ flex: 1 }}>
         <h1
           style={{
@@ -424,7 +466,7 @@ function Header({
         </p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-        <StatusPill live={live} />
+        <StatusPill conn={conn} />
         <TrustIndicator />
         {onSignOut && (
           <span style={{ fontFamily: font.mono, fontSize: 11, color: "var(--ink-soft)" }}>
@@ -494,7 +536,13 @@ function TrustIndicator() {
   );
 }
 
-function StatusPill({ live }: { live: boolean }) {
+function StatusPill({ conn }: { conn: "connecting" | "live" | "down" }) {
+  const label =
+    conn === "live"
+      ? "● daemon live"
+      : conn === "connecting"
+        ? "◌ connecting…"
+        : "○ daemon offline — showing fixtures";
   return (
     <span
       style={{
@@ -504,11 +552,11 @@ function StatusPill({ live }: { live: boolean }) {
         padding: "6px 12px",
         borderRadius: radius.pill,
         border: `1px solid var(--line)`,
-        color: live ? "var(--green)" : "var(--ink-soft)",
+        color: conn === "live" ? "var(--green)" : "var(--ink-soft)",
         whiteSpace: "nowrap",
       }}
     >
-      {live ? "● daemon live" : "○ daemon offline — showing fixtures"}
+      {label}
     </span>
   );
 }

@@ -79,6 +79,10 @@ export function AgentPicker({
               setCopied(false);
             }}
           >
+            {/* green dot = detected on PATH / ready to connect (OpenDesign affordance) */}
+            <span style={{ color: "var(--green)", marginRight: 6 }} title="detected · ready">
+              ●
+            </span>
             {a.name}
           </Button>
         ))}
@@ -89,6 +93,13 @@ export function AgentPicker({
           guided / manual
         </Button>
       </div>
+
+      {installed.length > 0 && (
+        <p style={{ fontFamily: font.mono, fontSize: 11, color: "var(--green)", marginTop: 8 }}>
+          {installed.length} agent{installed.length > 1 ? "s" : ""} detected on your PATH · ready to
+          connect
+        </p>
+      )}
 
       {installed.length === 0 && (
         <p style={{ fontFamily: font.mono, fontSize: 12, color: "var(--ink-soft)", marginTop: 10 }}>
