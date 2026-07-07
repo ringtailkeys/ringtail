@@ -66,11 +66,12 @@
   50% { transform: translateY(-5px); }
 }
 /* Home hero — the animated WebP-alpha loops natively; the poster PNG is its reduced-motion
-   fallback (hidden by default, swapped in below). */
-.rocco-hero-poster { display: none; }
+   fallback (hidden by default, swapped in below). !important because the component sets an
+   inline display:block on both hero <img>s — without it the poster shows as a 2nd static Rocco. */
+.rocco-hero-poster { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .rocco-anim:hover { animation: none !important; }
-  .rocco-hero-anim { display: none; }
+  .rocco-hero-anim { display: none !important; }
   .rocco-hero-poster { display: block !important; }
 }
 
