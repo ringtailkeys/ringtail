@@ -37,9 +37,11 @@
   --color-fd-ring: #f5a524;
 }
 
-/* Rocco idle loops — mirror libs/ui/src/anim.tsx keyframes so the mascot reacts to a
-   page's meaning (wave on welcome, cheer on success, shake on error, float otherwise).
-   Reduced-motion flattens every .rocco-anim to rest. */
+/* Rocco loops — mirror libs/ui/src/anim.tsx keyframes so the mascot reacts to a page's
+   meaning (wave on welcome, cheer on success, shake on error, float otherwise). Rocco is
+   STATIC by default (no autoplay); the per-pose loop runs ONLY on :hover, driven by the
+   --rocco-loop var the component sets. Reduced-motion flattens the hover state too. */
+.rocco-anim:hover { animation: var(--rocco-loop); }
 @keyframes rocco-wave {
   0%, 100% { transform: rotate(0deg); }
   20% { transform: rotate(-9deg); }
@@ -64,7 +66,7 @@
   50% { transform: translateY(-5px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .rocco-anim { animation: none !important; }
+  .rocco-anim:hover { animation: none !important; }
 }
 
 /* Graveyard — the dark nocturne. */
