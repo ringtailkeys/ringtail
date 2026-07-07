@@ -174,9 +174,13 @@ local_resource(
 # Manual only; each stage gates the next (&&, first failure aborts).
 #   preflight — typecheck+lint (nx) · no-leak · cli tests green, PLUS: clean git
 #     working tree AND on `master` (a release must be a reproducible commit).
-#   bump      — `npm version <patch|minor>` in packages/cli: writes the new version,
-#     commits it, and tags `v<x>` (--tag-version-prefix=v so it matches publish.yml's
-#     `v*` trigger). Refuses on a dirty tree by design.
+#   bump      — BUN-NATIVE (NOT `npm version`). `npm version` walks the whole
+#     workspace and chokes on `workspace:*` deps in sibling packages
+#     (`Unsupported URL Type "workspace:"`), so it can't run in this bun monorepo.
+#     Instead we: read packages/cli/package.json's version, compute the next
+#     patch/minor by hand (node), write it back, then `bun install` to refresh
+#     `bun.lockb` (else CI's `bun install --frozen-lockfile` fails on a stale
+#     lockfile), then commit + annotated-tag `v<x>` (matches publish.yml's `v*`).
 #   push      — `git push --follow-tags` sends the commit + tag → fires the Action.
 # See packages/cli/PUBLISH.md for the one-time Trusted-Publisher bootstrap.
 def release_cmd(bump):
@@ -190,17 +194,23 @@ def release_cmd(bump):
         BUN + ' run check && ' +
         BUN + ' run check:no-leak && ' +
         '( cd packages/cli && ' + BUN + ' test ) && ' +
-        'echo "-- bump + tag (npm version ' + bump + ') --------------------" && ' +
-        '( cd packages/cli && npm version ' + bump + ' --tag-version-prefix=v -m "release: ringtailkeys v%s" ) && ' +
-        'NEW=$(node -p "require(\'./packages/cli/package.json\').version") && ' +
+        'echo "-- bump + tag (bun-native ' + bump + ') --------------------" && ' +
+        'CUR=$(node -p "require(\'./packages/cli/package.json\').version") && ' +
+        'NEW=$(node -p "const v=\'$CUR\'.split(\'.\').map(Number); \'' + bump + '\'===\'minor\' ? (v[1]++,v[2]=0) : v[2]++; v.join(\'.\')") && ' +
+        'node -e "const fs=require(\'fs\'),f=\'./packages/cli/package.json\',p=require(f);p.version=\'$NEW\';fs.writeFileSync(f,JSON.stringify(p,null,2)+\'\\n\')" && ' +
+        BUN + ' install && ' +
+        'git add packages/cli/package.json bun.lockb && ' +
+        'git commit -m "release: ringtailkeys v$NEW" && ' +
+        'git tag "v$NEW" -m "release: ringtailkeys v$NEW" && ' +
         'echo "-- push (fires publish.yml) --------------------------" && ' +
         'git push --follow-tags && ' +
         'echo "Released v$NEW - GitHub Action is publishing to npm (watch the repo Actions tab)."'
     )
 
 # release (patch) is the default. release-minor for a feature bump; for a major,
-# run `cd packages/cli && npm version major --tag-version-prefix=v` by hand then
-# `git push --follow-tags` (same tag → same Action).
+# bump packages/cli/package.json's version by hand, `bun install`, then
+# `git commit`/`git tag v<x>`/`git push --follow-tags` (same tag → same Action).
+# Do NOT use `npm version` — it breaks in this bun workspace (see note above).
 local_resource(
     'release',
     cmd=release_cmd('patch'),
