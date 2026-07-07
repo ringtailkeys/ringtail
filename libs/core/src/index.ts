@@ -251,14 +251,41 @@ export function authorWizard(recipeId: string): Wizard {
 export interface PlanEntry {
   /** Env-var name (e.g. CLOUDFLARE_API_TOKEN). */
   key: string;
-  /** The `# ── Section ──` header it lives under (e.g. "Cloudflare"). */
+  /** The section header it lives under (e.g. "Cloudflare"), from either the box-drawing
+   *  `# ── Section ──` form or a plain `# Section` / `## Section` comment. "" if none. */
   section: string;
   /** Already satisfied in the live env — provisioning can skip it. */
   present: boolean;
 }
 
-const SECTION = /^#\s*─+\s*([^─]+?)\s*─+\s*$/;
+// A section header line. Matches BOTH the project's box-drawing `# ── Section ──` and a
+// plain `# Section` / `## Auth` / `# ---- Email ----` comment (the convention every normal
+// `.env.example` uses). The label is letters/digits/spaces + a few word chars; decorative
+// runs of ─/-/=/* and surrounding whitespace are stripped. A decoration-only or prose-with-
+// punctuation comment (URLs, colons, parens) does NOT match — those stay plain comments.
+const SECTION = /^#+\s*[─\-=*]*\s*([A-Za-z][A-Za-z0-9 /&._-]*?)\s*[─\-=*]*\s*$/;
 const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=/;
+
+// Known env-var → provider (recipe id) fallback, so a header-LESS `.env.example` still
+// splits into real provider rows instead of collapsing to one 'other'. Prefix match, first
+// hit wins — specific prefixes before general ones. Ids MUST mirror @ringtail/recipes ids
+// (neon · resend · better-auth · posthog · cloudflare · creem · infisical) — never invent one.
+const VAR_PROVIDER: [RegExp, string][] = [
+  [/^(DATABASE_URL|POSTGRES|PG|NEON)/, "neon"],
+  [/^RESEND/, "resend"],
+  [/^BETTER_AUTH/, "better-auth"],
+  [/^(NEXT_PUBLIC_)?POSTHOG/, "posthog"],
+  [/^(CLOUDFLARE|CF)_/, "cloudflare"],
+  [/^(CREEM|STRIPE|DODO)/, "creem"], // the billing provider
+  [/^INFISICAL/, "infisical"],
+];
+
+/** Map an env-var NAME to its provider (recipe id) by known prefix, or undefined. Used only
+ *  as a fallback when a var carries no section header. Names only — never touches values. */
+export function detectProvider(key: string): string | undefined {
+  const up = key.toUpperCase();
+  return VAR_PROVIDER.find(([re]) => re.test(up))?.[1];
+}
 
 /**
  * Read `.env.example` (the manifest) into the plan: every credential the project
@@ -288,8 +315,10 @@ export function readPlan(
 /**
  * Build the live cockpit grid from A CHOSEN project's `.env.example` (step 2 of the
  * onboarding flow). Ringtail is project-scoped: the picked project's manifest — not
- * the built-in recipe registry — defines the rows. Each `# ── Section ──` becomes a
- * provider row; the vars under it are its env-var names; a cell is `validated` when
+ * the built-in recipe registry — defines the rows. Each section header — box-drawing
+ * `# ── Section ──` OR a plain `# Section` / `## Auth` comment — becomes a provider row;
+ * a header-less var is routed to its provider by name (detectProvider). The vars under a
+ * row are its env-var names; a cell is `validated` when
  * every var in the section is already present in the live env, else `missing`. Names
  * only — the RHS in `.env.example` holds no values, so nothing secret is ever read.
  * Empty/missing file → empty grid.
@@ -301,7 +330,9 @@ export function gridFromExample(
   const order: string[] = [];
   const bySection = new Map<string, PlanEntry[]>();
   for (const entry of readPlan(examplePath, env)) {
-    const section = entry.section || "other";
+    // Section header wins (human-named row); else fall back to the var→provider map so a
+    // header-less manifest still yields real provider rows; else the catch-all 'other'.
+    const section = entry.section || detectProvider(entry.key) || "other";
     if (!bySection.has(section)) {
       bySection.set(section, []);
       order.push(section);

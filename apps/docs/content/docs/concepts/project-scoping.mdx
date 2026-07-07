@@ -10,6 +10,58 @@ The connection grid is built directly from it: providers × environments.
 Only **names and paths** cross the boundary during selection — never file contents, nothing
 secret.
 
+## The `.env.example` format
+
+Ringtail groups the keys in your `.env.example` into one provider **row** per section. You do
+not need any special format — the normal way you already write `.env.example` works. There are
+three ways a key gets grouped, in order:
+
+**1. A plain section comment** (what most projects already use):
+
+```dotenv
+# Database
+DATABASE_URL=
+
+## Auth
+BETTER_AUTH_SECRET=
+
+# ---- Email ----
+RESEND_API_KEY=
+```
+
+Each `# Header`, `## Header`, or `# ---- Header ----` comment starts a new row. Decorative
+dashes/equals/asterisks around the label are ignored, and a prose comment (one containing a
+URL, colon, or other sentence punctuation — e.g. `# get this from the dashboard →`) is left as
+a plain comment, not treated as a header.
+
+**2. The box-drawing section comment** (Ringtail's own repos use this — still supported):
+
+```dotenv
+# ── Cloudflare ──
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+```
+
+**3. No header at all** — Ringtail recognizes the provider from the **variable name** so a bare
+`.env.example` still splits into real provider rows:
+
+```dotenv
+DATABASE_URL=          # → neon
+BETTER_AUTH_SECRET=    # → better-auth
+RESEND_API_KEY=        # → resend
+CLOUDFLARE_API_TOKEN=  # → cloudflare
+STRIPE_SECRET_KEY=     # → creem (billing)
+```
+
+Known prefixes: `DATABASE_URL` / `POSTGRES*` / `PG*` / `NEON*` → **neon**, `RESEND*` →
+**resend**, `BETTER_AUTH*` → **better-auth**, `POSTHOG*` / `NEXT_PUBLIC_POSTHOG*` → **posthog**,
+`CLOUDFLARE*` / `CF_*` → **cloudflare**, `CREEM*` / `STRIPE*` / `DODO*` → **creem**,
+`INFISICAL*` → **infisical**. Anything unrecognized and without a header lands in an `other`
+row — still on the grid, just not auto-mapped to a recipe.
+
+As always, only **names** are read — the right-hand side of `.env.example` holds no values, so
+nothing secret is ever touched.
+
 ## The environment axis
 
 `local · dev · staging · prod`.
