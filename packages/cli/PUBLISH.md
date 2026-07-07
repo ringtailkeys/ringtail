@@ -47,6 +47,28 @@ Linux, where esbuild is fine, but `prepack` uses bun there too for consistency):
 
 `files: ["dist"]` ships only the built artifacts.
 
+## The clean-install smoke gate (why a broken install can't ship)
+
+`0.1.0` shipped **broken**: its `package.json` had `workspace:*` **runtime** deps npm
+can't resolve, so a stranger's `npm i ringtailkeys` failed — yet every gate
+(typecheck/lint/tests/tag-match) passed, because **nothing installed the packed
+tarball in a clean environment**.
+
+So **the pipeline now pack-installs and boots the tarball before publishing — a broken
+install blocks the release.** Between `prepack` and `npm publish`, `publish.yml` runs a
+**fail-closed smoke gate**; any failure exits non-zero → the job fails → `npm publish`
+never runs:
+
+1. `npm pack` → `ringtailkeys-<version>.tgz`.
+2. In a fresh `mktemp -d` **outside** the workspace: `npm init -y` then
+   `npm i <tarball>` — a `workspace:*` (or any unresolvable) dep makes this exit
+   non-zero. Then assert `node_modules/.bin/ringtail` exists.
+3. Boot the **installed** bin (`ringtail up`), parse the `http://127.0.0.1:<port>`
+   origin it prints, `curl` the daemon `/health` and assert `{"ok":true}`, then stop
+   it. If the daemon never comes up, the gate fails.
+4. Assert the packed `package.json` has **no** runtime `dependencies` value using the
+   `workspace:` protocol — a cheap direct check of the exact `0.1.0` failure.
+
 ---
 
 ## ONE-TIME bootstrap (do this once, before the button ever works)
