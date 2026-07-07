@@ -35,6 +35,7 @@ export function Rocco({
   pose = "chill",
   size = 116,
   animated = true,
+  hero = false,
   caption = false,
   side = false,
   tilt = true,
@@ -46,6 +47,9 @@ export function Rocco({
   tilt?: boolean;
   /** Wire the pose's loop to :hover (static at rest — never autoplays). Reduced-motion flattens it. */
   animated?: boolean;
+  /** Home-hero only: swap to the always-looping animated WebP-alpha (waving + breathing +
+   *  blink). Reduced-motion shows the static poster PNG instead (both handled in global.css). */
+  hero?: boolean;
   /** Show Rocco's deadpan line for this pose beneath the tile. */
   caption?: boolean;
   /** Float right of the prose (for contextual poses inside a page). */
@@ -53,7 +57,36 @@ export function Rocco({
   style?: CSSProperties;
 }) {
   const hoverLoop = animated ? LOOP[pose] : undefined;
-  const img = (
+  const imgBox: CSSProperties = {
+    display: "block",
+    width: size,
+    height: size,
+    objectFit: "contain",
+    transformOrigin: "bottom center",
+  };
+  // Home hero: animated WebP (loops natively, transparent) + static poster. CSS shows the
+  // poster and hides the WebP under prefers-reduced-motion (global.css). Nav + other poses
+  // stay the static PNGs below.
+  const img = hero ? (
+    <>
+      <img
+        src="/rocco/rocco-hero.webp"
+        alt="Rocco, the Ringtail mascot, waving"
+        width={size}
+        height={size}
+        className="rocco-hero-anim"
+        style={imgBox}
+      />
+      <img
+        src="/rocco/rocco-hero-poster.png"
+        alt="Rocco, the Ringtail mascot, waving"
+        width={size}
+        height={size}
+        className="rocco-hero-poster"
+        style={imgBox}
+      />
+    </>
+  ) : (
     <img
       src={`/rocco/rocco-${pose}.png`}
       alt={`Rocco the raccoon mascot, ${pose}`}
@@ -62,11 +95,7 @@ export function Rocco({
       className={hoverLoop ? "rocco-anim" : undefined}
       style={
         {
-          display: "block",
-          width: size,
-          height: size,
-          objectFit: "contain",
-          transformOrigin: "bottom center",
+          ...imgBox,
           // Static by default: the loop is exposed as a var and only runs on :hover (global.css).
           "--rocco-loop": hoverLoop,
         } as CSSProperties

@@ -1,0 +1,8 @@
+# Static export output (next build with output: "export")
+/out/
+out/
+.next/
+.source/
+
+# Never web-deploy heavy video masters — editable masters live in apps/.brand-assets/
+*.mov
