@@ -65,8 +65,13 @@
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-5px); }
 }
+/* Home hero — the animated WebP-alpha loops natively; the poster PNG is its reduced-motion
+   fallback (hidden by default, swapped in below). */
+.rocco-hero-poster { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .rocco-anim:hover { animation: none !important; }
+  .rocco-hero-anim { display: none; }
+  .rocco-hero-poster { display: block !important; }
 }
 
 /* Graveyard — the dark nocturne. */
