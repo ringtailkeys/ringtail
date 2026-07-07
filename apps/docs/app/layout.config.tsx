@@ -1,3 +1,4 @@
+import { Rocco } from "@/components/rocco";
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 
 /**
@@ -8,7 +9,13 @@ export const baseOptions: BaseLayoutProps = {
   nav: {
     title: (
       <>
-        <span aria-hidden>🦝</span> Ringtail
+        <Rocco
+          pose="waving"
+          size={26}
+          framed={false}
+          style={{ display: "inline-flex", margin: 0 }}
+        />{" "}
+        Ringtail
       </>
     ),
   },
