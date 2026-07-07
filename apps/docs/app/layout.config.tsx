@@ -9,12 +9,7 @@ export const baseOptions: BaseLayoutProps = {
   nav: {
     title: (
       <>
-        <Rocco
-          pose="waving"
-          size={26}
-          framed={false}
-          style={{ display: "inline-flex", margin: 0 }}
-        />{" "}
+        <Rocco pose="waving" size={26} tilt={false} style={{ display: "inline-flex", margin: 0 }} />{" "}
         Ringtail
       </>
     ),
