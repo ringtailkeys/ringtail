@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -321,8 +322,12 @@ export function buildMcpServer(
       },
     },
     async ({ action, env }) => {
+      // Target the ACTIVE project's .env.local (chosen in step 2), not the daemon's
+      // boot-time cwd default — else a local mint writes nowhere the user picked.
+      const project = store.snapshot().project;
       const { result, pending } = await proposeMintAction(action, {
         ...engineOpts,
+        ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
         env: env ?? "local",
       });
       // A consequential action is parked: route the unforgeable nonce to the dashboard

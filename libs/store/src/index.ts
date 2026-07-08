@@ -99,6 +99,14 @@ export function putCredential(key: string, cred: Credential): void {
 
 // ── the global root-key vault (per-account master keys that MINT other keys) ──
 
+/** Vault key normalization: provider segment is case-insensitive (allowlist keys are
+ * lowercase); the optional :account suffix is preserved. A root pasted under "Resend"
+ * then resolves for a "resend" mint. */
+function normRootKey(providerAccount: string): string {
+  const [provider, ...account] = providerAccount.split(":");
+  return [(provider ?? providerAccount).toLowerCase(), ...account].join(":");
+}
+
 /**
  * Store a root key for `providerAccount` (`resend`, or `resend:client-x` for a
  * multi-account agency). The GLOBAL vault — written once, reused across every repo
@@ -108,14 +116,14 @@ export function putCredential(key: string, cred: Credential): void {
 export function putRoot(providerAccount: string, value: string): void {
   const store = readStore();
   store.roots ??= {};
-  store.roots[providerAccount] = { value, updatedAt: new Date().toISOString() };
+  store.roots[normRootKey(providerAccount)] = { value, updatedAt: new Date().toISOString() };
   writeStore(store);
 }
 
 /** Resolve a root key VALUE for `providerAccount`, or null if we don't hold one.
  * Daemon-internal: callers substitute it into an allowlisted call, never surface it. */
 export function resolveRoot(providerAccount: string): string | null {
-  return readStore().roots?.[providerAccount]?.value ?? null;
+  return readStore().roots?.[normRootKey(providerAccount)]?.value ?? null;
 }
 
 /** The provider(+account) NAMES we hold a root key for — names only, never a value.

@@ -7,7 +7,8 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { putRoot, readStore } from "@ringtail/store";
+import { putRoot, readStore, resolveRoot } from "@ringtail/store";
+import { hostAllowed } from "./allowlist";
 import {
   approveMintAction,
   executeMintAction,
@@ -50,6 +51,18 @@ beforeEach(() => {
   mock.calls.oauthToken.length = 0;
   mock.calls.validate.length = 0;
   mock.calls.authSeen.length = 0;
+});
+
+test("case-insensitive provider: root pasted 'Mock' resolves for 'mock'/'MOCK', allowlist matches any casing", () => {
+  putRoot("Mock", ROOT); // paste under mixed case (the vault normalizes the provider segment)
+  expect(resolveRoot("mock")).toBe(ROOT); // a lowercase mint finds it
+  expect(resolveRoot("MOCK")).toBe(ROOT); // and any casing
+  expect(hostAllowed("Mock", "http://localhost/x")).toBe(true); // lowercase-keyed allowlist matches
+  expect(hostAllowed("MOCK", "http://127.0.0.1/x")).toBe(true);
+  // agency :account suffix casing is preserved (only the provider segment lowercases)
+  putRoot("Mock:Client-X", ROOT);
+  expect(resolveRoot("mock:Client-X")).toBe(ROOT);
+  expect(resolveRoot("mock:client-x")).toBeNull();
 });
 
 test("non-allowlisted host is REJECTED before any HTTP (the structural floor)", async () => {

@@ -34,7 +34,7 @@ export function providerOf(providerAccount: string): string {
  * key or making any HTTP call: a non-allowlisted host is rejected, never reached.
  */
 export function hostAllowed(providerAccount: string, url: string): boolean {
-  const provider = providerOf(providerAccount);
+  const provider = providerOf(providerAccount).toLowerCase();
   // The `mock` row points at loopback (localhost/127.0.0.1) — in a real build that is
   // an SSRF surface: a coding agent runs on the SAME machine, so it can BE a loopback
   // listener and read the root off its own inbound request, or hit any local service
