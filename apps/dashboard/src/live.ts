@@ -1,5 +1,5 @@
 import type { CredentialStatus } from "@ringtail/ui";
-import type { DaemonSnapshot, GridEnv, GridRow, RootInfo } from "@ringtail/core";
+import type { DaemonSnapshot, GridEnv, GridRow, MintSelection, RootInfo } from "@ringtail/core";
 import { MIXED } from "./cockpit/fixtures";
 
 /**
@@ -95,15 +95,64 @@ export async function approveAction(id: string, confirmed?: boolean): Promise<un
  * with the stored root key. The agent never received this nonce, so it can't self-
  * approve the write it authored. Body is `{ nonce }` (NOT `{ id, confirmed }` — that's
  * the mapped-action path). Returns the value-free run result; throws on transport failure. */
-export async function approveMint(nonce: string): Promise<unknown> {
+export async function approveMint(nonce: string, selection?: MintSelection): Promise<unknown> {
   const token = await ensureToken();
   const res = await fetch(`${DAEMON_URL}/api/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ nonce }),
+    // A GUIDED mint (PRD §4.5) rides the human's {resource, permission, expiry, rootId}
+    // selection alongside the nonce; a plain mint sends just the nonce. Value-free (ids only).
+    body: JSON.stringify(selection ? { nonce, selection } : { nonce }),
   });
   if (!res.ok) throw new Error(`approveMint failed: ${res.status}`);
   return res.json();
+}
+
+// ── OAuth "Connect a provider" (PRD §4.9) — the dashboard drives the loopback flow ──
+
+/** The value-free connect surface: providers already connected (NAMES + scopes + expiry,
+ * never a token) + the connector catalogue (signup / api-keys URLs + needs-creds flags). */
+export interface ConnectStatus {
+  connected: Array<{ provider: string; scopes: string[]; expiresAt?: number; obtainedAt: number }>;
+  connectors: Array<{
+    id: string;
+    connected: boolean;
+    needsClientCreds: boolean;
+    scopes: string[];
+    signupUrl?: string;
+    apiKeysUrl?: string;
+  }>;
+}
+
+/** GET the connect status (connected providers + the connector catalogue). Empty on down. */
+export async function fetchConnectStatus(): Promise<ConnectStatus> {
+  try {
+    const token = await ensureToken();
+    const res = await fetch(`${DAEMON_URL}/api/connect/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return (await res.json()) as ConnectStatus;
+  } catch {
+    return { connected: [], connectors: [] };
+  }
+}
+
+/** Start the OAuth flow: POST the provider → daemon builds the loopback authorize URL
+ * (PKCE + state parked in the daemon) → returns { authorizeUrl } for us to open in a new
+ * tab. Value-free: no token exists yet. Throws with the daemon's message on 400. */
+export async function connectStart(provider: string): Promise<{ authorizeUrl: string }> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/connect/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ provider }),
+  });
+  if (!res.ok)
+    throw new Error(
+      ((await res.json().catch(() => ({}))) as { error?: string }).error ??
+        `connect failed: ${res.status}`,
+    );
+  return (await res.json()) as { authorizeUrl: string };
 }
 
 export interface DetectedAgent {
