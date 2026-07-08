@@ -3,6 +3,7 @@ import { syncCredential, type Environment } from "@ringtail/sinks";
 import { discoverCredentials, putCredential, resolveRoot } from "@ringtail/store";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
+import { resolveGrantToken } from "./oauth";
 import { DangerSchema, type PendingMint } from "./wizard";
 
 /**
@@ -231,8 +232,15 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     }
   }
 
-  // 4. resolve the root key (only required when a header references {{ROOT}}).
-  const root = resolveRoot(providerAccount);
+  // 4. resolve the root key (only required when a header references {{ROOT}}). A pasted
+  //    root wins; absent one, an OAuth grant obtained via the loopback connect flow
+  //    (PRD §4.9) is spent exactly the same way — `{{ROOT}}` substitutes the grant's
+  //    access token. Still value-free: the token leaves the daemon ONLY into the
+  //    allowlisted host below, never back to the agent. resolveGrantToken refreshes an
+  //    expired grant in place (daemon-local). The `??` short-circuits, so a pasted root
+  //    never triggers the async grant lookup.
+  const root =
+    resolveRoot(providerAccount) ?? (await resolveGrantToken(providerOf(providerAccount)));
   if (usesRoot(action) && !root) {
     return {
       providerAccount,

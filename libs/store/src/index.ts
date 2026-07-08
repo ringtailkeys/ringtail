@@ -35,6 +35,25 @@ export interface RootCredential {
   updatedAt: string;
 }
 
+/**
+ * An OAuth grant — the tokens Ringtail obtained on the user's behalf via the loopback
+ * PKCE "Connect a provider" flow (PRD §4.9). An access/refresh token IS a secret value,
+ * so it lives in the SAME 0600 vault as a pasted root and is NEVER returned to any
+ * agent-facing surface. Keyed by `provider` (github/google/…). The daemon substitutes
+ * `accessToken` into an outbound call to an allowlisted host exactly like a pasted root;
+ * only NAMES + scopes + expiry are ever surfaced (listConnectedProviders).
+ */
+export interface Grant {
+  provider: string;
+  accessToken: string;
+  refreshToken?: string;
+  scopes: string[];
+  /** Unix ms the access token expires, or undefined for non-expiring tokens (e.g. GitHub). */
+  expiresAt?: number;
+  /** Unix ms the grant was obtained/last-refreshed. */
+  obtainedAt: number;
+}
+
 /** The signed-in control-plane session (Better Auth). The daemon holds this privately
  * and sends it ONLY to the control-plane (entitlement/usage/checkout) — it is NEVER
  * surfaced to the agent or the dashboard (only the email/tier are). Persisted so a
@@ -50,6 +69,8 @@ export interface Store {
   /** The global root-key vault, keyed by `provider`(+`:account`). Optional so an
    * existing store without it reads clean. */
   roots?: Record<string, RootCredential>;
+  /** OAuth grants, keyed by `provider`. Optional so an older store reads clean. */
+  grants?: Record<string, Grant>;
   /** The control-plane session (account sign-in). Optional so an older store reads clean. */
   session?: Session;
 }
@@ -71,6 +92,7 @@ export function readStore(): Store {
     return {
       credentials: parsed.credentials ?? {},
       roots: parsed.roots ?? {},
+      grants: parsed.grants ?? {},
       ...(parsed.session ? { session: parsed.session } : {}),
     };
   } catch {
@@ -130,6 +152,48 @@ export function resolveRoot(providerAccount: string): string | null {
  * Safe to surface (dashboard "which roots are set"). */
 export function listRootAccounts(): string[] {
   return Object.keys(readStore().roots ?? {});
+}
+
+// ── the OAuth grant vault (tokens from the loopback PKCE connect flow) ───────
+
+/** A value-free view of a connected provider — NAMES + scopes + expiry only, NEVER
+ * a token. This is the ONLY grant shape that may cross an agent/dashboard surface. */
+export interface ConnectedProvider {
+  provider: string;
+  scopes: string[];
+  expiresAt?: number;
+  obtainedAt: number;
+}
+
+/**
+ * Store an OAuth grant for `provider` (github/google/…). The GLOBAL vault, same 0600
+ * file as the roots. The tokens NEVER leave the daemon except substituted into an
+ * outbound call to an allowlisted provider host (mirrors putRoot). Provider is lowercased.
+ */
+export function putGrant(provider: string, grant: Grant): void {
+  const store = readStore();
+  store.grants ??= {};
+  store.grants[provider.toLowerCase()] = { ...grant, provider: provider.toLowerCase() };
+  writeStore(store);
+}
+
+/** The raw grant for `provider` (tokens included) or null. Daemon-INTERNAL only —
+ * callers substitute `accessToken` into an allowlisted call, never surface it. */
+export function getGrant(provider: string): Grant | null {
+  return readStore().grants?.[provider.toLowerCase()] ?? null;
+}
+
+/** The connected providers — NAMES + scopes + expiry, NEVER a token. Safe to surface
+ * (dashboard "which providers are connected", the agent-guided status). */
+export function listConnectedProviders(): ConnectedProvider[] {
+  return Object.values(readStore().grants ?? {}).map(
+    ({ provider, scopes, expiresAt, obtainedAt }) => ({
+      provider,
+      scopes,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+      obtainedAt,
+    }),
+  );
 }
 
 // ── the control-plane session (account sign-in; daemon-private) ──────────────

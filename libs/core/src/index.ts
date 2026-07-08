@@ -23,6 +23,8 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
+// The OAuth "Connect a provider" registry + loopback PKCE flow (PRD §4.9).
+export * from "./oauth";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
 export { startMockProvider, type MockProvider } from "./mock-provider";
 

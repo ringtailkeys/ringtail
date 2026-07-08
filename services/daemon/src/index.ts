@@ -26,6 +26,7 @@ import {
   verifyOtp,
 } from "./control-plane";
 import { buildMcpServer } from "./mcp";
+import { connectStatus, connectedHtml, handleCallback, startConnect } from "./oauth";
 import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
 import { applyStep } from "./submit";
@@ -143,8 +144,24 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   app.get("/health", (c) => c.json({ ok: true }));
   app.get("/api/status", (c) => c.json({ providers: connectionMap() }));
   app.get("/oauth/callback", async (c) => {
+    // The OAuth "Connect a provider" flow (PRD §4.9) owns this route when `state` matches
+    // a pending PKCE connect: exchange the code, vault the grant value-free, render a
+    // close-tab page. A non-matching state falls through to the legacy mock-recipe path
+    // below (unchanged) — so this one route carries both without a breaking change.
+    const oauthState = c.req.query("state");
+    try {
+      const done = await handleCallback(c.req.query("code"), oauthState);
+      if (done) return c.html(connectedHtml(done.provider));
+    } catch (err) {
+      return c.html(
+        `<!doctype html><p>Connect failed: ${
+          err instanceof Error ? err.message : String(err)
+        }. You can close this tab.</p>`,
+        400,
+      );
+    }
     const recipe = c.req.query("recipe") ?? "mock";
-    const state = c.req.query("state") ?? null;
+    const state = oauthState ?? null;
     try {
       const report = await provisionCredential(recipe, { env: defaultEnvironment() });
       return c.json({
@@ -296,6 +313,28 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     }
     putRoot(body.providerAccount, body.value); // value → disk, never returned
     return c.json({ ok: true, providerAccount: body.providerAccount, roots: listRootAccounts() });
+  });
+
+  // ── OAuth "Connect a provider" (PRD §4.9) — loopback redirect + PKCE ─────────
+  // POST /api/connect/start { provider } → generate PKCE + state, build the provider's
+  // authorize URL against THIS daemon's loopback /oauth/callback, park the verifier+state
+  // in memory, and return { authorizeUrl } for the dashboard to open. Value-free: no token
+  // exists yet. A provider missing client creds returns a plain 400 (never crashes).
+  app.post("/api/connect/start", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { provider?: string };
+    if (!body.provider) return c.json({ error: "provider required" }, 400);
+    const { authorizeUrl, error } = startConnect(body.provider, new URL(c.req.url).origin);
+    if (error) return c.json({ error }, 400);
+    return c.json({ authorizeUrl });
+  });
+
+  // GET /api/connect/status → connected providers (NAMES + scopes + expiry, never a token)
+  // + the connector catalogue (signup / api-keys URLs + needs-creds flags) so the dashboard
+  // and the agent can guide "sign up / manage keys here". Token-gated like every /api route.
+  app.get("/api/connect/status", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    return c.json(connectStatus());
   });
 
   // POST /api/chat — the USER → agent direction channel. The user types in the

@@ -9,12 +9,14 @@ import {
   ChatChoiceSchema,
   GRID_ENVS,
   type GridEnv,
+  listConnectors,
   type MintAction,
   MintActionSchema,
   proposeMintAction,
   type Wizard,
   WizardSchema,
 } from "@ringtail/core";
+import { listConnectedProviders } from "@ringtail/store";
 import { z } from "zod";
 import { runAction, runEngine } from "./action";
 import { applyStep } from "./submit";
@@ -339,6 +341,22 @@ export function buildMcpServer(
       if (result.status === "minted") store.markMinted(result.providerAccount, env ?? "local");
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },
+  );
+
+  // listConnectors() → the agent-guided onboarding surface (PRD §4.9). The agent can
+  // see which providers support the OAuth "Connect" flow, which are already connected,
+  // which still need client credentials, and the signup / api-keys URLs to send the user
+  // to. VALUE-FREE: names + urls + scopes + booleans only — never a token. The dashboard
+  // drives the actual connect (POST /api/connect/start opens the authorizeUrl); this just
+  // lets the agent say "sign up / connect here".
+  tool(
+    server,
+    "listConnectors",
+    {
+      description:
+        "List the OAuth providers the user can connect (PRD §4.9): id, connected?, needsClientCreds?, scopes, and signup / api-keys URLs to guide the user. Also returns already-connected providers (names + scopes + expiry). Never returns a token.",
+    },
+    async () => ok({ connectors: listConnectors(), connected: listConnectedProviders() }),
   );
 
   return server;
