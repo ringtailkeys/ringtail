@@ -7,11 +7,14 @@ import { createHash } from "node:crypto";
  *
  *   GET  /authorize   → 302 back to redirect_uri?code=…&state=… (remembers the PKCE challenge)
  *   POST /token       → validates the PKCE verifier (S256), returns a fixed access/refresh token
+ *   GET  /domains     → a PROTECTED read-only list: Bearer <token> → { data:[{id,name},…] } (discovery)
  *   POST /mint        → a PROTECTED resource: Bearer <access token> → { api_key } (the mint target)
  *
  * The issued token is a fixed SENTINEL so the e2e can assert it reached the host but
  * NEVER appeared in any daemon → client response. `authSeen` records every Authorization
  * header the fake received (proves `{{ROOT}}` was substituted with the grant token).
+ * `mintSeen` records each /mint request BODY so the guided-mint e2e can assert the SCOPED
+ * body carried the chosen resource + least-privilege permission (never full_access).
  */
 
 /** The fixed tokens the fake issues (sentinels the leak assertions hunt for). */
@@ -21,11 +24,20 @@ export const MOCK_OAUTH_REFRESHED_ACCESS = "mock-oauth-access-REFRESHED-xyz789";
 /** The value the protected /mint endpoint hands back on a valid bearer (also a sentinel). */
 export const MOCK_MINTED_KEY = "mock-minted-api-key-SENTINEL-ghi012";
 
+/** The value-free resources the fake /domains endpoint enumerates (≥2, for discovery). */
+export const MOCK_DOMAINS = [
+  { id: "dom_aaa111", name: "alpha.example.com" },
+  { id: "dom_bbb222", name: "beta.example.com" },
+] as const;
+
 export interface MockOAuth {
   authorizeUrl: string;
   tokenUrl: string;
   mintUrl: string;
+  domainsUrl: string;
   authSeen: string[];
+  /** Each /mint request body — lets the e2e assert the SCOPED (least-privilege) mint body. */
+  mintSeen: Array<Record<string, unknown>>;
   stop: () => void;
 }
 
@@ -33,8 +45,11 @@ const b64url = (buf: Buffer): string => buf.toString("base64url");
 
 export function startMockOAuth(): MockOAuth {
   const authSeen: string[] = [];
+  const mintSeen: Array<Record<string, unknown>> = [];
   // code → the PKCE challenge presented at /authorize, verified at /token.
   const challenges = new Map<string, string>();
+  const validBearer = (auth: string | null): boolean =>
+    auth === `Bearer ${MOCK_OAUTH_ACCESS}` || auth === `Bearer ${MOCK_OAUTH_REFRESHED_ACCESS}`;
 
   const server = Bun.serve({
     port: 0,
@@ -87,13 +102,19 @@ export function startMockOAuth(): MockOAuth {
         });
       }
 
+      // The protected read-only DISCOVERY list — enumerates resources value-free (no secret).
+      if (url.pathname === "/domains" && req.method === "GET") {
+        if (!validBearer(auth)) return json({ error: "unauthorized" }, 401);
+        return json({ data: MOCK_DOMAINS });
+      }
+
       // The protected resource the mint spends the grant against.
       if (url.pathname === "/mint" && req.method === "POST") {
-        if (
-          auth !== `Bearer ${MOCK_OAUTH_ACCESS}` &&
-          auth !== `Bearer ${MOCK_OAUTH_REFRESHED_ACCESS}`
-        ) {
-          return json({ error: "unauthorized" }, 401);
+        if (!validBearer(auth)) return json({ error: "unauthorized" }, 401);
+        try {
+          mintSeen.push((await req.json()) as Record<string, unknown>);
+        } catch {
+          mintSeen.push({});
         }
         return json({ api_key: MOCK_MINTED_KEY });
       }
@@ -107,7 +128,9 @@ export function startMockOAuth(): MockOAuth {
     authorizeUrl: `${base}/authorize`,
     tokenUrl: `${base}/token`,
     mintUrl: `${base}/mint`,
+    domainsUrl: `${base}/domains`,
     authSeen,
+    mintSeen,
     stop: () => server.stop(true),
   };
 }

@@ -362,12 +362,16 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       id?: string;
       confirmed?: boolean;
       nonce?: string;
+      selection?: { resource: string; permission: string; expiry?: string };
     };
     // Approve a parked consequential mint by its server nonce — the UNFORGEABLE human
     // channel. The agent never received this nonce (it went to the dashboard over SSE),
-    // so it cannot self-approve the write it proposed. Executes with confirmed:true.
+    // so it cannot self-approve the write it proposed. Executes with confirmed:true. For a
+    // GUIDED mint (PRD §4.5) the human's {resource, permission, expiry} selection rides
+    // alongside the nonce; approveMintAction validates it against the discovered options and
+    // scopes the mint to exactly that pick (least-privilege), never a blanket permission.
     if (body.nonce) {
-      const result = await approveMintAction(body.nonce);
+      const result = await approveMintAction(body.nonce, body.selection);
       if (result.status !== "rejected") store.clearPendingMint(body.nonce);
       // P1: the human approved a real mint → flip its grid cell to validated so the mint
       // always shows in the grid without the agent calling updateStatus. env defaults to

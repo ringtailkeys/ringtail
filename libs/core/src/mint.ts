@@ -3,6 +3,7 @@ import { syncCredential, type Environment } from "@ringtail/sinks";
 import { discoverCredentials, putCredential, resolveRoot } from "@ringtail/store";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
+import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
 import { resolveGrantToken } from "./oauth";
 import { DangerSchema, type PendingMint } from "./wizard";
 
@@ -19,6 +20,17 @@ import { DangerSchema, type PendingMint } from "./wizard";
  */
 
 const ROOT_PLACEHOLDER = "{{ROOT}}";
+
+/**
+ * GUIDED least-privilege placeholders (PRD §4.5). The agent authors a SCOPED-mint template
+ * carrying these where the human's steered choices go; the daemon substitutes them from the
+ * approved selection at run time (into the url + body only — headers carry {{ROOT}}). Same
+ * template mechanic as {{ROOT}}, so the least-privilege scope is baked in from the human's
+ * pick, never blanket full_access authored by the agent.
+ */
+const RESOURCE_PLACEHOLDER = "{{RESOURCE}}";
+const PERMISSION_PLACEHOLDER = "{{PERMISSION}}";
+const EXPIRY_PLACEHOLDER = "{{EXPIRY}}";
 
 /**
  * The agent-authored action. `headers` may carry `{{ROOT}}` — the daemon
@@ -49,6 +61,15 @@ export const MintActionSchema = z.object({
   /** `confirm`/`destructive` require an explicit `confirmed:true` to run (approve
    * gate). Omitted / `safe` = auto-run (read-only permission checks never nag). */
   danger: DangerSchema.optional(),
+  /**
+   * GUIDED least-privilege mint (PRD §4.5). When true, the daemon runs the provider's
+   * value-free DISCOVERY probe (a read-only GET) BEFORE parking this consequential mint,
+   * enumerates the real resources + permission options, and parks them as `choices` for the
+   * human to steer. The human's {resource, permission, expiry} pick is substituted into the
+   * `{{RESOURCE}}`/`{{PERMISSION}}`/`{{EXPIRY}}` placeholders (url + body) at approve time.
+   * The provider needs a discovery spec (getDiscoverySpec) or the request is rejected.
+   */
+  discover: z.boolean().optional(),
 });
 export type MintAction = z.infer<typeof MintActionSchema>;
 
@@ -186,6 +207,87 @@ function scrub(reason: string, secrets: string[]): string {
 }
 
 /**
+ * The shared root-resolve + outbound-call core (gates 4 + 5), factored so the mint executor
+ * AND the read-only discovery probe walk the SAME security path — one place resolves
+ * `{{ROOT}}`, refuses an off-allowlist redirect, and scrubs secrets from any error. Returns
+ * the successful Response for the caller to consume, or a value-free error MintResult.
+ * The caller MUST have already passed `structuralReject` (allowlist + header hygiene).
+ */
+async function sendWithRoot(
+  action: MintAction,
+): Promise<{ res: Response } | { error: MintResult }> {
+  const { providerAccount } = action;
+  // 4. resolve the root key (pasted root wins; else an OAuth grant token, refreshed in place).
+  const root =
+    resolveRoot(providerAccount) ?? (await resolveGrantToken(providerOf(providerAccount)));
+  if (usesRoot(action) && !root) {
+    return {
+      error: {
+        providerAccount,
+        status: "no-root",
+        reason: `no root key stored for ${providerAccount} — paste one in the dashboard first`,
+      },
+    };
+  }
+  const secrets = root ? [root] : [];
+  const headers: Record<string, string> = {
+    ...(action.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    ...resolveHeaders(action.headers ?? {}, root ?? ""),
+  };
+
+  // 5. the HTTP call — the ONLY place the root leaves the daemon, toward the allowlisted
+  //    host verified by structuralReject. `redirect:"manual"` so a 3xx can never carry the
+  //    root to an off-allowlist Location (fetch would not re-check the hop → we refuse it).
+  let res: Response;
+  try {
+    res = await fetch(action.url, {
+      method: action.method,
+      headers,
+      body: action.body !== undefined ? JSON.stringify(action.body) : undefined,
+      redirect: "manual",
+    });
+  } catch (err) {
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: scrub(`network error: ${(err as Error).message}`, secrets),
+      },
+    };
+  }
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: "provider returned a redirect — not followed (off-allowlist hop blocked)",
+      },
+    };
+  }
+  if (!res.ok) {
+    const gap =
+      res.status === 401 || res.status === 403
+        ? "root key lacks the required permission/scope"
+        : `provider returned HTTP ${res.status}`;
+    let detail = "";
+    try {
+      const b = (await res.json()) as { error?: string; message?: string };
+      detail = b.error ?? b.message ?? "";
+    } catch {
+      /* non-JSON body — status is enough */
+    }
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: scrub(detail ? `${gap}: ${detail}` : gap, secrets),
+      },
+    };
+  }
+  return { res };
+}
+
+/**
  * Run one agent-authored action end-to-end. Gate order is deliberate:
  *   1. allowlist — the structural floor: a non-allowlisted host is REJECTED before
  *      the root key is even resolved, so it can never leave toward an arbitrary URL.
@@ -232,81 +334,12 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     }
   }
 
-  // 4. resolve the root key (only required when a header references {{ROOT}}). A pasted
-  //    root wins; absent one, an OAuth grant obtained via the loopback connect flow
-  //    (PRD §4.9) is spent exactly the same way — `{{ROOT}}` substitutes the grant's
-  //    access token. Still value-free: the token leaves the daemon ONLY into the
-  //    allowlisted host below, never back to the agent. resolveGrantToken refreshes an
-  //    expired grant in place (daemon-local). The `??` short-circuits, so a pasted root
-  //    never triggers the async grant lookup.
-  const root =
-    resolveRoot(providerAccount) ?? (await resolveGrantToken(providerOf(providerAccount)));
-  if (usesRoot(action) && !root) {
-    return {
-      providerAccount,
-      status: "no-root",
-      reason: `no root key stored for ${providerAccount} — paste one in the dashboard first`,
-    };
-  }
-  // Known secret VALUES to redact from any provider/exception-derived reason before it
-  // leaves the daemon (defence in depth behind the header-hygiene reject above).
-  const secrets = root ? [root] : [];
-  const headers: Record<string, string> = {
-    ...(action.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    ...resolveHeaders(action.headers ?? {}, root ?? ""),
-  };
-
-  // 5. the HTTP call — the ONLY place the root key leaves the daemon, toward the
-  //    allowlisted host verified in gate 1. `redirect: "manual"` so a 3xx from an
-  //    allowlisted host can NEVER carry the root key to an off-allowlist Location:
-  //    fetch does not re-check the hop, so we refuse to follow it (a redirect = failed).
-  let res: Response;
-  try {
-    res = await fetch(action.url, {
-      method: action.method,
-      headers,
-      body: action.body !== undefined ? JSON.stringify(action.body) : undefined,
-      redirect: "manual",
-    });
-  } catch (err) {
-    return {
-      providerAccount,
-      status: "failed",
-      reason: scrub(`network error: ${(err as Error).message}`, secrets),
-    };
-  }
-
-  // A redirect off the allowlisted host is NOT followed — the root would ride the
-  // re-issued request to whatever Location the provider returned (open-redirect exfil).
-  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-    return {
-      providerAccount,
-      status: "failed",
-      reason: "provider returned a redirect — not followed (off-allowlist hop blocked)",
-    };
-  }
-
-  if (!res.ok) {
-    // Plain-language recovery cause (Layer 4) — a scope gap reads as a scope gap.
-    const gap =
-      res.status === 401 || res.status === 403
-        ? "root key lacks the required permission/scope"
-        : `provider returned HTTP ${res.status}`;
-    let detail = "";
-    try {
-      const b = (await res.json()) as { error?: string; message?: string };
-      detail = b.error ?? b.message ?? "";
-    } catch {
-      /* non-JSON body — status is enough */
-    }
-    // Scrub: a provider that reflects our Authorization header / a submitted field into
-    // its error body can echo the root back — it must never survive into the reason.
-    return {
-      providerAccount,
-      status: "failed",
-      reason: scrub(detail ? `${gap}: ${detail}` : gap, secrets),
-    };
-  }
+  // 4 + 5. resolve the root key (pasted root, or an OAuth grant spent identically) and make
+  //         the ONE outbound call to the allowlisted host — off-allowlist redirect refused,
+  //         secrets scrubbed from any error. Shared with the discovery probe (sendWithRoot).
+  const sent = await sendWithRoot(action);
+  if ("error" in sent) return sent.error;
+  const { res } = sent;
 
   // 6. no extract → a permission-check / wire action succeeded (no key to file).
   if (!action.extract) return { providerAccount, status: "ok" };
@@ -339,6 +372,129 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
 }
 
 /**
+ * The value-free DISCOVERY probe (PRD §4.5). Runs the provider's read-only GET with the
+ * root/grant to enumerate its scopable resources + the least-privilege permission menu —
+ * NAMES/ids + labels only, NEVER a secret. It walks the SAME gates as a mint (structural
+ * floor → sendWithRoot: allowlist, root-substitute, redirect refusal, scrub); a GET is not
+ * consequential, so it needs no human approval. Returns the value-free `MintChoices`, or a
+ * value-free `MintResult` when there's no spec, the probe fails, or nothing is discovered.
+ */
+export async function runDiscovery(providerAccount: string): Promise<MintChoices | MintResult> {
+  const spec = getDiscoverySpec(providerOf(providerAccount));
+  if (!spec) {
+    return {
+      providerAccount,
+      status: "rejected",
+      reason: `no discovery spec for ${providerOf(providerAccount)} — cannot run a guided mint`,
+    };
+  }
+  const probe: MintAction = {
+    providerAccount,
+    method: "GET",
+    url: spec.url,
+    headers: spec.headers,
+  };
+  // The structural floor still applies to the probe url (allowlist + header hygiene).
+  const rejected = structuralReject(probe);
+  if (rejected) return rejected;
+  const sent = await sendWithRoot(probe);
+  if ("error" in sent) return sent.error;
+  let body: unknown;
+  try {
+    body = await sent.res.json();
+  } catch {
+    return { providerAccount, status: "failed", reason: "discovery response was not JSON" };
+  }
+  const list = pluck(body, spec.listPath);
+  if (!Array.isArray(list)) {
+    return {
+      providerAccount,
+      status: "failed",
+      reason: `discovery: no resource list at '${spec.listPath}'`,
+    };
+  }
+  // Pull ONLY the id + name fields — never the raw resource object (value-free by construction).
+  const resources = list
+    .map((item) => ({
+      id: String(pluck(item, spec.idField) ?? ""),
+      name: String(pluck(item, spec.nameField) ?? pluck(item, spec.idField) ?? ""),
+    }))
+    .filter((r) => r.id !== "");
+  return {
+    resources,
+    permissions: spec.permissions,
+    // The narrowest permission is the SUGGESTED default (agent suggests, human confirms/edits).
+    suggestedPermission: spec.permissions[0] ?? "",
+    supportsExpiry: spec.supportsExpiry,
+  };
+}
+
+/** Substitute the guided placeholders ({{RESOURCE}}/{{PERMISSION}}/{{EXPIRY}}) throughout a
+ * JSON value (deep). An object key whose value is exactly `{{EXPIRY}}` is DROPPED when no
+ * expiry was selected (or the provider doesn't support it) so an unfilled placeholder never
+ * ships as a literal string. Headers are untouched here — they carry {{ROOT}} only. */
+function deepSubstitute(value: unknown, sel: MintSelection, withExpiry: boolean): unknown {
+  if (typeof value === "string") {
+    return value
+      .split(RESOURCE_PLACEHOLDER)
+      .join(sel.resource)
+      .split(PERMISSION_PLACEHOLDER)
+      .join(sel.permission)
+      .split(EXPIRY_PLACEHOLDER)
+      .join(withExpiry ? (sel.expiry ?? "") : "");
+  }
+  if (Array.isArray(value)) return value.map((v) => deepSubstitute(v, sel, withExpiry));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (!withExpiry && v === EXPIRY_PLACEHOLDER) continue; // drop an unfilled expiry field
+      out[k] = deepSubstitute(v, sel, withExpiry);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Validate + apply the human's selection to a parked guided-mint template. The selection is
+ * checked against the DISCOVERED options (a resource id that wasn't enumerated, or a
+ * permission outside the spec's menu, is refused) so a compromised dashboard can't scope a
+ * mint to an arbitrary resource/permission. On success, the {{RESOURCE}}/{{PERMISSION}}/
+ * {{EXPIRY}} placeholders are substituted into the url + body — the least-privilege scope
+ * baked in from the human's pick, not a blanket full_access authored by the agent.
+ */
+function applySelection(
+  action: MintAction,
+  selection: MintSelection | undefined,
+  choices: MintChoices,
+): { action: MintAction } | { reject: string } {
+  if (!selection)
+    return { reject: "a resource + permission selection is required for a guided mint" };
+  if (!choices.resources.some((r) => r.id === selection.resource)) {
+    return { reject: "selected resource is not one of the discovered options" };
+  }
+  if (!choices.permissions.includes(selection.permission)) {
+    return { reject: "selected permission is not one of the offered least-privilege options" };
+  }
+  const withExpiry = choices.supportsExpiry && !!selection.expiry;
+  return {
+    action: {
+      ...action,
+      url: action.url
+        .split(RESOURCE_PLACEHOLDER)
+        .join(selection.resource)
+        .split(PERMISSION_PLACEHOLDER)
+        .join(selection.permission)
+        .split(EXPIRY_PLACEHOLDER)
+        .join(withExpiry ? (selection.expiry ?? "") : ""),
+      ...(action.body !== undefined
+        ? { body: deepSubstitute(action.body, selection, withExpiry) }
+        : {}),
+    },
+  };
+}
+
+/**
  * The parked-mint registry — the UNFORGEABLE human-confirm channel for `mintKey`.
  * A consequential action the agent proposes is stashed here under a server-generated
  * nonce; it executes ONLY when a human posts that nonce back via POST /api/action. The
@@ -349,7 +505,10 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
  * pending approvals (the agent just re-proposes), which is the correct fail-safe for a
  * security gate; persist them only if approvals must survive a crash.
  */
-const pendingMints = new Map<string, { action: MintAction; opts: MintOpts }>();
+const pendingMints = new Map<
+  string,
+  { action: MintAction; opts: MintOpts; choices?: MintChoices }
+>();
 
 export interface ProposeResult {
   /** The value-free result handed to the AGENT — carries the public `id`, NEVER the nonce. */
@@ -376,9 +535,28 @@ export async function proposeMintAction(
     // Not a write → run it now, but never honor an agent-supplied confirm.
     return { result: await executeMintAction(action, { ...opts, confirmed: false }) };
   }
+  // GUIDED least-privilege (PRD §4.5): a `discover`-flagged consequential mint runs the
+  // value-free discovery probe FIRST, then parks the discovered menu as `choices`. Discovery
+  // failing (no spec / probe error / nothing found) rejects the proposal — never park a mint
+  // whose {{RESOURCE}}/{{PERMISSION}} placeholders can't be filled.
+  let choices: MintChoices | undefined;
+  if (action.discover) {
+    const disc = await runDiscovery(action.providerAccount);
+    if ("status" in disc) return { result: disc }; // a MintResult → discovery failed, don't park
+    if (disc.resources.length === 0) {
+      return {
+        result: {
+          providerAccount: action.providerAccount,
+          status: "failed",
+          reason: "discovery found no resources to scope this mint to",
+        },
+      };
+    }
+    choices = disc;
+  }
   const id = randomBytes(6).toString("hex");
   const nonce = randomBytes(24).toString("hex");
-  pendingMints.set(nonce, { action, opts });
+  pendingMints.set(nonce, { action, opts, ...(choices ? { choices } : {}) });
   const pending: PendingMint = {
     id,
     nonce,
@@ -386,6 +564,7 @@ export async function proposeMintAction(
     method: action.method,
     danger: action.danger,
     varName: action.extract?.varName,
+    ...(choices ? { choices } : {}),
   };
   return {
     pending,
@@ -403,12 +582,32 @@ export async function proposeMintAction(
  * agent never received the nonce, so it cannot forge this. An unknown or already-used
  * nonce is rejected (never executes). On a hit the parked action runs with the ONE
  * `confirmed:true` the system ever sets.
+ *
+ * GUIDED mints (PRD §4.5) also carry the human's `selection` — the daemon validates it
+ * against the discovered options and substitutes {{RESOURCE}}/{{PERMISSION}}/{{EXPIRY}}
+ * into the action BEFORE executing, so the minted key is scoped to exactly what the human
+ * chose (least-privilege), never the blanket permission the agent might have authored.
  */
-export async function approveMintAction(nonce: string): Promise<MintResult> {
+export async function approveMintAction(
+  nonce: string,
+  selection?: MintSelection,
+): Promise<MintResult> {
   const parked = nonce ? pendingMints.get(nonce) : undefined;
   if (!parked) {
     return { providerAccount: "", status: "rejected", reason: "unknown or already-used approval" };
   }
   pendingMints.delete(nonce);
-  return executeMintAction(parked.action, { ...parked.opts, confirmed: true });
+  let action = parked.action;
+  if (parked.choices) {
+    const applied = applySelection(action, selection, parked.choices);
+    if ("reject" in applied) {
+      return {
+        providerAccount: action.providerAccount,
+        status: "rejected",
+        reason: applied.reject,
+      };
+    }
+    action = applied.action;
+  }
+  return executeMintAction(action, { ...parked.opts, confirmed: true });
 }

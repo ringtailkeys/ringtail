@@ -23,6 +23,9 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
+// The guided least-privilege DISCOVERY registry (PRD §4.5) — value-free resource +
+// permission enumeration specs, one row per provider.
+export * from "./discovery";
 // The OAuth "Connect a provider" registry + loopback PKCE flow (PRD §4.9).
 export * from "./oauth";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
