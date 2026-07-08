@@ -51,6 +51,27 @@ value** — that is enforced by `check:no-leak`.
   human confirms out-of-band. Returns `{ providerAccount, varName?, status, reason? }` — **never a
   value** (root or minted; any reflected secret is scrubbed from `reason`). The root key itself is
   pasted by the user via `POST /api/root`, never through the agent.
+- **`rotateKey(rotate, env?)`** — **rotate a credential** (mint a fresh scoped key → switch the
+  sink to it → revoke the old key) as **one human-approved, atomic operation with safe rollback**.
+  The agent authors `{ varName, mint, revoke }`: `mint` is a normal scoped/guided
+  [`mintKey`](#complete--execute) template (its `extract.varName` must equal `varName`; its
+  `extract.idPath` names the new key's id), and `revoke` is the old-key delete — its url/body may
+  carry `{{OLD_KEY_ID}}` (filled daemon-side from the stored old key id) and its headers carry
+  `{{ROOT}}`. A rotation is inherently consequential (it mints **and** revokes with the root key),
+  so it comes back `needs-confirm` and is parked under an unforgeable nonce — the agent can never
+  self-approve. On the human's one approval the daemon runs the whole rotation **locally**:
+  **mint-new → reconfigure the sink → (optional validate) → revoke-old**, with safe rollback —
+  if mint or the sink write fails it **aborts and restores the old working key** (never revoking),
+  and if the revoke fails after the sink switched it returns **`partial`** (new key live, "revoke
+  the old one manually"). Returns names + status only — **never a value** (old or minted).
+
+## Connect providers
+
+- **`listConnectors()`** — the agent-guided onboarding surface. Lists the OAuth providers the user
+  can **connect** (id, `connected?`, `needsClientCreds?`, `scopes`, and the signup / api-keys URLs
+  to guide the user to), plus the already-connected providers (names + scopes + expiry). The
+  dashboard drives the actual connect (`POST /api/connect/start` opens the authorize URL); this
+  just lets the agent say "sign up / connect here". **Never returns a token.**
 
 ## Chat (the direction channel)
 

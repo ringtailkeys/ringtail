@@ -159,6 +159,14 @@ export interface PendingMint {
    * selection rides back with the nonce on POST /api/action. Carries no secret value.
    */
   choices?: MintChoices;
+  /**
+   * ROTATION (PRD Phase 2): true when this parked approval is a credential ROTATION (mint a
+   * fresh scoped key → switch the sink → revoke the old key) rather than a plain mint. The
+   * ONE human approval of the parked nonce authorizes the whole atomic rotate (mint + revoke
+   * are both consequential, but the human's "yes, rotate" covers both). Value-free label so
+   * the dashboard card reads "Rotate <var>" instead of "Mint <var>".
+   */
+  rotate?: boolean;
 }
 
 /**

@@ -35,9 +35,15 @@ export interface MockOAuth {
   tokenUrl: string;
   mintUrl: string;
   domainsUrl: string;
+  /** Base for the revoke endpoint: `DELETE {keysUrl}/{id}` deletes a key by id. */
+  keysUrl: string;
   authSeen: string[];
   /** Each /mint request body — lets the e2e assert the SCOPED (least-privilege) mint body. */
   mintSeen: Array<Record<string, unknown>>;
+  /** Provider key ids the /mint endpoint issued, in order (value-free identifiers). */
+  mintedIds: string[];
+  /** Provider key ids that DELETE /keys/:id revoked — the rotation e2e's revoke assertion. */
+  revokedIds: string[];
   stop: () => void;
 }
 
@@ -46,6 +52,9 @@ const b64url = (buf: Buffer): string => buf.toString("base64url");
 export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
   const authSeen: string[] = [];
   const mintSeen: Array<Record<string, unknown>> = [];
+  const mintedIds: string[] = [];
+  const revokedIds: string[] = [];
+  let keyCounter = 0;
   // code → the PKCE challenge presented at /authorize, verified at /token.
   const challenges = new Map<string, string>();
   // The OAuth-issued sentinels plus any PASTED-ROOT values the multi-root test vaults — a
@@ -114,7 +123,8 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
         return json({ data: MOCK_DOMAINS });
       }
 
-      // The protected resource the mint spends the grant against.
+      // The protected resource the mint spends the grant against. `?fail=1` forces a provider
+      // error (the rotation rollback e2e drives mint-fails-→-abort through this).
       if (url.pathname === "/mint" && req.method === "POST") {
         if (!validBearer(auth)) return json({ error: "unauthorized" }, 401);
         try {
@@ -122,7 +132,26 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
         } catch {
           mintSeen.push({});
         }
-        return json({ api_key: MOCK_MINTED_KEY });
+        if (url.searchParams.get("fail") === "1") {
+          return json({ error: "mint failed: provider error (500)" }, 500);
+        }
+        const id = `key_${++keyCounter}`;
+        mintedIds.push(id);
+        // A fresh key id per call (value-free) so a rotation can revoke the OLD id by name; the
+        // secret VALUE stays the fixed sentinel the leak assertions hunt for.
+        return json({ api_key: MOCK_MINTED_KEY, id });
+      }
+
+      // Revoke a key by id: `DELETE /keys/:id`. `?fail=1` forces a provider error (the rotation
+      // rollback e2e drives revoke-fails-→-partial through this). Value-free: ids only.
+      if (url.pathname.startsWith("/keys/") && req.method === "DELETE") {
+        if (!validBearer(auth)) return json({ error: "unauthorized" }, 401);
+        const id = decodeURIComponent(url.pathname.slice("/keys/".length));
+        if (url.searchParams.get("fail") === "1") {
+          return json({ error: "revoke failed: provider error (500)" }, 500);
+        }
+        revokedIds.push(id);
+        return json({ revoked: true, id });
       }
 
       return json({ error: "not found" }, 404);
@@ -135,8 +164,11 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
     tokenUrl: `${base}/token`,
     mintUrl: `${base}/mint`,
     domainsUrl: `${base}/domains`,
+    keysUrl: `${base}/keys`,
     authSeen,
     mintSeen,
+    mintedIds,
+    revokedIds,
     stop: () => server.stop(true),
   };
 }

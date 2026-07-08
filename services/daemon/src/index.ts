@@ -393,7 +393,11 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       // `local` (the MVP + the mintKey tool's default). ponytail: approveMintAction returns
       // only the value-free MintResult (no env); a deployed-env mint's exact cell still
       // needs updateStatus. Thread env through PendingMint/MintResult if that matters.
-      if (result.status === "minted") store.markMinted(result.providerAccount, "local");
+      // `minted` = a mint or a clean rotation (done); `partial` = a rotation whose new key is
+      // live but the old one wasn't revoked — the new key still works, so flip the cell.
+      if (result.status === "minted" || result.status === "partial") {
+        store.markMinted(result.providerAccount, "local");
+      }
       return c.json(result);
     }
     if (!body.id) return c.json({ error: "id required" }, 400);

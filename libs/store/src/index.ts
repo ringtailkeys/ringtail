@@ -24,6 +24,28 @@ export interface Credential {
   provider: string;
   /** ISO-8601 timestamp of the last write. */
   updatedAt: string;
+  /** The PROVIDER-side key id (e.g. Resend `re_...`'s id, NOT the token) captured at mint
+   * via `extract.idPath`. VALUE-FREE — an identifier, never the secret. Stored so a later
+   * ROTATION can revoke exactly this key by id. Absent for keys minted before rotation. */
+  keyId?: string;
+}
+
+/**
+ * A value-free record of one rotation (PRD Phase 2). Ids + timestamp + outcome only — NEVER
+ * a secret value (an id is an identifier, not a credential). Appended on every rotation so
+ * the audit trail survives; the outcome distinguishes a clean rotate (`done`), a safe abort
+ * that kept/restored the old key (`aborted`), and a switched-but-not-revoked one (`partial`).
+ */
+export interface RotationRecord {
+  varName: string;
+  provider: string;
+  oldKeyId?: string;
+  newKeyId?: string;
+  outcome: "done" | "aborted" | "partial";
+  /** Plain-language cause (abort reason / "revoke manually" note). No value. */
+  reason?: string;
+  /** ISO-8601 timestamp of the rotation. */
+  ts: string;
 }
 
 /** A per-account ROOT credential — the master key that MINTS other keys. Lives in
@@ -128,6 +150,8 @@ export interface Store {
   grants?: Record<string, Grant>;
   /** The control-plane session (account sign-in). Optional so an older store reads clean. */
   session?: Session;
+  /** The value-free rotation audit log (PRD Phase 2). Optional so an older store reads clean. */
+  rotations?: RotationRecord[];
 }
 
 /** Root config dir. `RINGTAIL_HOME` overrides; default ~/.ringtail. */
@@ -150,6 +174,7 @@ export function readStore(): Store {
       rootRegistry: parsed.rootRegistry ?? [],
       grants: parsed.grants ?? {},
       ...(parsed.session ? { session: parsed.session } : {}),
+      ...(parsed.rotations ? { rotations: parsed.rotations } : {}),
     };
   } catch {
     // ponytail: corrupt/hand-edited file → treat as empty rather than crash;
@@ -406,6 +431,21 @@ export function clearSession(): void {
   const store = readStore();
   delete store.session;
   writeStore(store);
+}
+
+// ── the rotation audit log (PRD Phase 2; value-free ids + outcomes) ──────────
+
+/** Append one value-free rotation record to the audit log (same 0600 file). */
+export function appendRotation(rec: RotationRecord): void {
+  const store = readStore();
+  store.rotations ??= [];
+  store.rotations.push(rec);
+  writeStore(store);
+}
+
+/** The rotation audit log — ids + timestamps + outcomes only, NEVER a value. */
+export function listRotations(): RotationRecord[] {
+  return readStore().rotations ?? [];
 }
 
 /**

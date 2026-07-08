@@ -25,6 +25,8 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
+// Credential ROTATION (PRD Phase 2) — the mint-new → reconfigure → revoke-old state machine.
+export * from "./rotate";
 // The guided least-privilege DISCOVERY registry (PRD §4.5) — value-free resource +
 // permission enumeration specs, one row per provider.
 export * from "./discovery";

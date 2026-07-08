@@ -13,6 +13,9 @@ import {
   type MintAction,
   MintActionSchema,
   proposeMintAction,
+  proposeRotateAction,
+  type RotateAction,
+  RotateActionSchema,
   type Wizard,
   WizardSchema,
 } from "@ringtail/core";
@@ -339,6 +342,38 @@ export function buildMcpServer(
       // grid cell now. A consequential mint returns needs-confirm here and is flipped
       // after the human approves (index.ts POST /api/action), not on this call.
       if (result.status === "minted") store.markMinted(result.providerAccount, env ?? "local");
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // rotateKey(rotate, env?) → ROTATE a credential (PRD Phase 2). The agent authors
+  // `{ varName, mint, revoke }`: `mint` is a fresh scoped-key mint template (reuses the guided/
+  // multi-root mint machinery — its extract fills `varName`, its `extract.idPath` names the new
+  // key's id); `revoke` is the OLD-key delete (its url/body may carry {{OLD_KEY_ID}}, filled
+  // daemon-side from the stored old key id; headers carry {{ROOT}}). A rotation is inherently
+  // consequential (mint AND revoke spend the root key), so it comes back `needs-confirm` and is
+  // parked under an unforgeable nonce — the agent can never self-approve. When the HUMAN approves
+  // the nonce (POST /api/action), the daemon runs the whole atomic rotate LOCALLY:
+  //   mint-new → reconfigure the sink → (optional validate) → revoke-old,
+  // with SAFE rollback (mint/sink fail → abort + restore the old key, no revoke; revoke fail →
+  // `partial`: new key live, "revoke the old one manually"). Returns names + status only, NEVER a
+  // value (old or minted) — the whole rotation is daemon-local.
+  tool<{ rotate: RotateAction; env?: GridEnv }>(
+    server,
+    "rotateKey",
+    {
+      description:
+        "Rotate a credential: mint a fresh scoped key, switch the sink to it, then revoke the old key — as one human-approved, atomic operation with safe rollback. The agent authors { varName, mint, revoke }; a rotation is consequential so it comes back needs-confirm and is parked for a human (the agent cannot self-approve). On failure it rolls back to the old working key (abort) or reports the old key must be revoked manually (partial). Never returns a secret value (old or minted).",
+      inputSchema: { rotate: RotateActionSchema, env: GRID_ENV.optional() },
+    },
+    async ({ rotate, env }) => {
+      const project = store.snapshot().project;
+      const { result, pending } = await proposeRotateAction(rotate, {
+        ...engineOpts,
+        ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+        env: env ?? "local",
+      });
+      if (pending) store.addPendingMint(pending);
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },
   );

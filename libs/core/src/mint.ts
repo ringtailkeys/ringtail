@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { syncCredential, type Environment } from "@ringtail/sinks";
 import {
+  appendRotation,
   discoverCredentials,
   listRootsFor,
   putCredential,
+  readStore,
   resolveRoot,
   resolveRootById,
 } from "@ringtail/store";
@@ -11,6 +13,7 @@ import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
 import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
 import { resolveGrantToken } from "./oauth";
+import { type RotationEffects, type RotationOutcome, runRotation } from "./rotate";
 import { DangerSchema, type PendingMint } from "./wizard";
 
 /**
@@ -62,6 +65,10 @@ export const MintActionSchema = z.object({
       varName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "varName must be a valid env-var name"),
       /** Dot-path into the JSON response, e.g. `token` or `data.api_key`. */
       path: z.string().min(1),
+      /** OPTIONAL dot-path to the provider's key ID in the response (e.g. `id`). VALUE-FREE
+       * — an identifier, not the secret. Captured + stored so a later ROTATION can revoke
+       * exactly this key by id (the `{{OLD_KEY_ID}}` the revoke call substitutes). */
+      idPath: z.string().min(1).optional(),
     })
     .optional(),
   /** `confirm`/`destructive` require an explicit `confirmed:true` to run (approve
@@ -84,7 +91,17 @@ export interface MintResult {
   providerAccount: string;
   /** The env-var name written (mint) — never its value. */
   varName?: string;
-  status: "minted" | "reused" | "ok" | "rejected" | "needs-confirm" | "no-root" | "failed";
+  status:
+    | "minted"
+    | "reused"
+    | "ok"
+    | "rejected"
+    | "needs-confirm"
+    | "no-root"
+    | "failed"
+    // ROTATION (PRD Phase 2): the new key is live + working, but the OLD key could NOT be
+    // revoked — the human must revoke it manually (see `reason`). NOT a broken project.
+    | "partial";
   /** Plain-language cause (allowlist reject, missing scope, rate-limit…). No value. */
   reason?: string;
   /** Public correlation id for a parked (`needs-confirm`) consequential mint. NOT the
@@ -152,6 +169,12 @@ function pluck(obj: unknown, path: string): unknown {
     if (acc && typeof acc === "object") return (acc as Record<string, unknown>)[key];
     return undefined;
   }, obj);
+}
+
+/** Pluck a VALUE-FREE provider key id (a string identifier) at `idPath`, or undefined. */
+function extractKeyId(body: unknown, idPath: string): string | undefined {
+  const id = pluck(body, idPath);
+  return id === undefined || id === null || id === "" ? undefined : String(id);
 }
 
 /**
@@ -364,12 +387,13 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
   if (!action.extract) return { providerAccount, status: "ok" };
 
   // extract the minted secret → sink (.env.local for local, Infisical for deployed).
-  let value: unknown;
+  let bodyJson: unknown;
   try {
-    value = pluck(await res.json(), action.extract.path);
+    bodyJson = await res.json();
   } catch {
     return { providerAccount, status: "failed", reason: "response was not JSON — cannot extract" };
   }
+  const value = pluck(bodyJson, action.extract.path);
   if (value === undefined || value === null || value === "") {
     return {
       providerAccount,
@@ -380,12 +404,16 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
 
   const varName = action.extract.varName;
   const minted = String(value);
+  // Capture the provider key id (value-free) when the agent gave an `idPath`, so a later
+  // rotation can revoke exactly this key. Absent idPath / missing field → no keyId (fine).
+  const keyId = action.extract.idPath ? extractKeyId(bodyJson, action.extract.idPath) : undefined;
   await syncCredential(varName, minted, { env: opts.env, envLocalPath: opts.envLocalPath });
   // Persist to the vault with the audit name as provenance (find + revoke later).
   putCredential(varName, {
     value: minted,
     provider: auditName(opts.repoName, opts.env, providerAccount),
     updatedAt: new Date().toISOString(),
+    ...(keyId ? { keyId } : {}),
   });
   return { providerAccount, varName, status: "minted" };
 }
@@ -531,7 +559,7 @@ function applySelection(
  */
 const pendingMints = new Map<
   string,
-  { action: MintAction; opts: MintOpts; choices?: MintChoices }
+  { action: MintAction; opts: MintOpts; choices?: MintChoices; rotate?: RotateAction }
 >();
 
 export interface ProposeResult {
@@ -559,6 +587,21 @@ export async function proposeMintAction(
     // Not a write → run it now, but never honor an agent-supplied confirm.
     return { result: await executeMintAction(action, { ...opts, confirmed: false }) };
   }
+  return parkConsequential(action, opts);
+}
+
+/**
+ * Park a consequential action under a fresh unforgeable nonce → the value-free `needs-confirm`
+ * for the agent + the `pending` (with the nonce) for the dashboard SSE. Shared by
+ * `proposeMintAction` and `proposeRotateAction`; `rotate` (when set) tags the parked entry so
+ * the human's one approval runs the whole rotation instead of a plain mint. The multi-root +
+ * guided-discovery choice logic runs on `action` (the mint template) exactly the same for both.
+ */
+async function parkConsequential(
+  action: MintAction,
+  opts: MintOpts,
+  rotate?: RotateAction,
+): Promise<ProposeResult> {
   // MULTI-ROOT (PRD §4.4): when the provider holds >1 root the mint can't silently pick one —
   // the human must choose WHICH via the value-free root menu. `resolveRoot` is ambiguous here
   // (returns null), so discovery can't run yet; it's DEFERRED to approve time against the
@@ -618,15 +661,22 @@ export async function proposeMintAction(
   }
   const id = randomBytes(6).toString("hex");
   const nonce = randomBytes(24).toString("hex");
-  pendingMints.set(nonce, { action, opts, ...(choices ? { choices } : {}) });
+  pendingMints.set(nonce, {
+    action,
+    opts,
+    ...(choices ? { choices } : {}),
+    ...(rotate ? { rotate } : {}),
+  });
+  const verb = rotate ? "rotate" : (action.danger ?? action.method);
   const pending: PendingMint = {
     id,
     nonce,
     providerAccount: action.providerAccount,
     method: action.method,
     danger: action.danger,
-    varName: action.extract?.varName,
+    varName: rotate ? rotate.varName : action.extract?.varName,
     ...(choices ? { choices } : {}),
+    ...(rotate ? { rotate: true } : {}),
   };
   return {
     pending,
@@ -634,7 +684,7 @@ export async function proposeMintAction(
       providerAccount: action.providerAccount,
       status: "needs-confirm",
       id,
-      reason: `human approval required (${action.danger ?? action.method}) — approve in the dashboard`,
+      reason: `human approval required (${verb}) — approve in the dashboard`,
     },
   };
 }
@@ -700,5 +750,188 @@ export async function approveMintAction(
     action = applied.action;
   }
 
+  // ROTATION (PRD Phase 2): the parked entry is a rotation — the human's ONE approval runs the
+  // whole atomic rotate. `action` is now the (optionally guided/root-scoped) NEW-key mint; feed
+  // it plus the revoke template into the state machine. All value handling stays daemon-local.
+  if (parked.rotate) {
+    return runRotationApproved({ ...parked.rotate, mint: action }, parked.opts, rootValue);
+  }
+
   return executeMintAction(action, { ...parked.opts, confirmed: true, rootValue });
+}
+
+// ── ROTATION (PRD Phase 2): mint-new → reconfigure → revoke-old, with safe rollback ─────────
+
+const OLD_KEY_ID_PLACEHOLDER = "{{OLD_KEY_ID}}";
+
+/**
+ * A ROTATION the agent authors: swap the key filed under `varName` for a fresh one, then revoke
+ * the old. `mint` is a normal scoped/guided mint template (its `extract.varName` MUST equal
+ * `varName`, `extract.idPath` SHOULD name the new key's id). `revoke` is the old-key delete —
+ * its url/body may carry `{{OLD_KEY_ID}}` (filled daemon-side from the stored old key id) and
+ * its headers carry `{{ROOT}}`. Both are consequential; the human's ONE approval covers both.
+ */
+export const RotateActionSchema = z.object({
+  varName: z.string().min(1),
+  mint: MintActionSchema,
+  revoke: MintActionSchema,
+});
+export type RotateAction = z.infer<typeof RotateActionSchema>;
+
+/** Substitute the stored OLD key id into the revoke action's url + body (headers carry {{ROOT}}). */
+function fillOldKeyId(action: MintAction, oldKeyId: string): MintAction {
+  const sub = (s: string): string => s.split(OLD_KEY_ID_PLACEHOLDER).join(oldKeyId);
+  const subDeep = (v: unknown): unknown =>
+    typeof v === "string"
+      ? sub(v)
+      : Array.isArray(v)
+        ? v.map(subDeep)
+        : v && typeof v === "object"
+          ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subDeep(x)]))
+          : v;
+  return {
+    ...action,
+    url: sub(action.url),
+    ...(action.body !== undefined ? { body: subDeep(action.body) } : {}),
+  };
+}
+
+/**
+ * The agent PROPOSES a rotation (the MCP `rotateKey` entry). A rotation is inherently
+ * consequential (it mints AND revokes with the root key), so it is ALWAYS parked for a human —
+ * never auto-run. Both the mint + revoke templates pass the structural floor up front, and the
+ * mint must extract into `varName` (so the new key overwrites the old under the same name).
+ */
+export async function proposeRotateAction(
+  rotate: RotateAction,
+  opts: MintOpts,
+): Promise<ProposeResult> {
+  for (const a of [rotate.mint, rotate.revoke]) {
+    const r = structuralReject(a);
+    if (r) return { result: r };
+  }
+  if (!rotate.mint.extract || rotate.mint.extract.varName !== rotate.varName) {
+    return {
+      result: {
+        providerAccount: rotate.mint.providerAccount,
+        status: "rejected",
+        reason: `rotate.mint must extract into '${rotate.varName}' (the var being rotated)`,
+      },
+    };
+  }
+  return parkConsequential(rotate.mint, opts, rotate);
+}
+
+/**
+ * Build the daemon-local rotation effects for an APPROVED rotation, then run the state machine.
+ * The value adapter: the OLD value + minted NEW value live ONLY in this closure — the pure
+ * `runRotation` orchestrator (and everything it returns) is value-free. Records the outcome to
+ * the value-free audit log. `mint` here is the already-scoped/root-selected NEW-key mint.
+ */
+async function runRotationApproved(
+  rotate: RotateAction,
+  opts: MintOpts,
+  rootValue: string | undefined,
+): Promise<MintResult> {
+  const { varName } = rotate;
+  const providerAccount = rotate.mint.providerAccount;
+  const provenance = auditName(opts.repoName, opts.env, providerAccount);
+
+  // Read the OLD value (to restore on abort) + the OLD key id (to revoke) — daemon-local.
+  const [oldHit] = discoverCredentials([varName], { envLocalPath: opts.envLocalPath });
+  const oldValue = oldHit?.value;
+  const oldKeyId = readStore().credentials[varName]?.keyId;
+  if (!oldValue) {
+    return {
+      providerAccount,
+      varName,
+      status: "failed",
+      reason: `no current ${varName} to rotate`,
+    };
+  }
+
+  let newValue: string | undefined;
+  let newKeyId: string | undefined;
+
+  const fx: RotationEffects = {
+    varName,
+    ...(oldKeyId ? { oldKeyId } : {}),
+    // minting — mint the new key at the provider; hold the value in this closure.
+    async mintNew() {
+      const sent = await sendWithRoot(rotate.mint, rootValue);
+      if ("error" in sent) return { ok: false, reason: sent.error.reason ?? "mint failed" };
+      let body: unknown;
+      try {
+        body = await sent.res.json();
+      } catch {
+        return { ok: false, reason: "mint response was not JSON" };
+      }
+      const v = pluck(body, rotate.mint.extract!.path);
+      if (v === undefined || v === null || v === "") {
+        return { ok: false, reason: `minted value not found at '${rotate.mint.extract!.path}'` };
+      }
+      newValue = String(v);
+      newKeyId = rotate.mint.extract!.idPath
+        ? extractKeyId(body, rotate.mint.extract!.idPath)
+        : undefined;
+      return { ok: true, ...(newKeyId ? { newKeyId } : {}) };
+    },
+    // reconfiguring — switch the sink + vault to the new key (old value stays recoverable).
+    async reconfigure() {
+      try {
+        await syncCredential(varName, newValue!, {
+          env: opts.env,
+          envLocalPath: opts.envLocalPath,
+        });
+        putCredential(varName, {
+          value: newValue!,
+          provider: provenance,
+          updatedAt: new Date().toISOString(),
+          ...(newKeyId ? { keyId: newKeyId } : {}),
+        });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message };
+      }
+    },
+    // revoking — DELETE the old key by id at the provider (already human-approved → confirmed).
+    async revokeOld() {
+      const revoke = fillOldKeyId(rotate.revoke, oldKeyId!);
+      const r = await executeMintAction(revoke, { ...opts, confirmed: true, rootValue });
+      return r.status === "ok" || r.status === "reused"
+        ? { ok: true }
+        : { ok: false, reason: r.reason ?? r.status };
+    },
+    // abort — roll the sink + vault back to the old (working) key.
+    async restore() {
+      await syncCredential(varName, oldValue, { env: opts.env, envLocalPath: opts.envLocalPath });
+      putCredential(varName, {
+        value: oldValue,
+        provider: provenance,
+        updatedAt: new Date().toISOString(),
+        ...(oldKeyId ? { keyId: oldKeyId } : {}),
+      });
+    },
+  };
+
+  const outcome = await runRotation(fx);
+  appendRotation({
+    varName: outcome.varName,
+    provider: providerOf(providerAccount),
+    ...(outcome.oldKeyId ? { oldKeyId: outcome.oldKeyId } : {}),
+    ...(outcome.newKeyId ? { newKeyId: outcome.newKeyId } : {}),
+    outcome:
+      outcome.state === "done" ? "done" : outcome.state === "partial" ? "partial" : "aborted",
+    ...(outcome.reason ? { reason: outcome.reason } : {}),
+    ts: new Date().toISOString(),
+  });
+  return rotationResult(outcome, providerAccount);
+}
+
+/** Map a value-free RotationOutcome → the MintResult the approve path returns. `done` → minted
+ * (new key live), `partial` → partial (live but old NOT revoked — revoke manually), else failed. */
+function rotationResult(o: RotationOutcome, providerAccount: string): MintResult {
+  const status: MintResult["status"] =
+    o.state === "done" ? "minted" : o.state === "partial" ? "partial" : "failed";
+  return { providerAccount, varName: o.varName, status, ...(o.reason ? { reason: o.reason } : {}) };
 }
