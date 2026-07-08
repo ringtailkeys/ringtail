@@ -328,6 +328,10 @@ export function buildMcpServer(
       // A consequential action is parked: route the unforgeable nonce to the dashboard
       // over SSE (never back to the agent). The agent only gets `needs-confirm` + id.
       if (pending) store.addPendingMint(pending);
+      // P1: a mint that AUTO-RAN (non-consequential) already landed its key — flip its
+      // grid cell now. A consequential mint returns needs-confirm here and is flipped
+      // after the human approves (index.ts POST /api/action), not on this call.
+      if (result.status === "minted") store.markMinted(result.providerAccount, env ?? "local");
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },
   );

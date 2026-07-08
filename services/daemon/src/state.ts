@@ -1,6 +1,7 @@
 import { getEnv } from "@ringtail/config";
 import {
   gridSeed,
+  providerOf,
   type Action,
   type ActiveProject,
   type AuthState,
@@ -105,6 +106,21 @@ export class DaemonStore {
     const row = this.#grid.find((r) => r.provider === provider);
     if (!row) throw new Error(`unknown provider: ${provider}`);
     row.envs[env] = status;
+    this.#emit();
+  }
+
+  /** P1: after a real mint returns `minted`, flip the matching grid cell to `validated`
+   * so a successful mint ALWAYS shows in the grid — without depending on the agent
+   * calling updateStatus. Matches the provider case-INSENSITIVELY against the
+   * `.env.example` row label, so a `# Resend` header (row `"Resend"`) and the `resend`
+   * providerAccount both hit — removing the `setCell` "unknown provider" footgun. Silent
+   * no-op if no row matches: a mint SUCCEEDING must never throw over a grid-label
+   * mismatch (unlike setCell, which hard-errors for the agent's updateStatus). */
+  markMinted(providerAccount: string, env: GridEnv): void {
+    const want = providerOf(providerAccount).toLowerCase();
+    const row = this.#grid.find((r) => r.provider.toLowerCase() === want);
+    if (!row) return;
+    row.envs[env] = "validated";
     this.#emit();
   }
 
