@@ -1,5 +1,5 @@
 import type { CredentialStatus } from "@ringtail/ui";
-import type { DaemonSnapshot, GridEnv, GridRow } from "@ringtail/core";
+import type { DaemonSnapshot, GridEnv, GridRow, RootInfo } from "@ringtail/core";
 import { MIXED } from "./cockpit/fixtures";
 
 /**
@@ -41,22 +41,24 @@ export async function submitStep(stepId: string, value?: string): Promise<{ stat
   return (await res.json()) as { status: string };
 }
 
-/** The DASHBOARD root-key intake: POST a per-account MASTER key user → daemon
- * (never through the agent), stored in the global ~/.ringtail vault. Same trust
- * path as a paste. Returns the value-free result ({ providerAccount, roots }) — the
- * NAMES of accounts we now hold a root for, never a value; throws on transport failure. */
+/** The DASHBOARD root-key intake: POST a MASTER key user → daemon (never through the
+ * agent), stored in the global ~/.ringtail vault. Same trust path as a paste. A provider
+ * can hold MANY named roots (PRD §4.4) — an optional `label` (e.g. "prod"/"staging") + an
+ * optional agency `account` distinguish siblings. Returns the value-free registry (RootInfo[]
+ * — ids/labels/accounts, NEVER a value); throws on transport failure. */
 export async function submitRoot(
-  providerAccount: string,
+  provider: string,
   value: string,
-): Promise<{ providerAccount: string; roots: string[] }> {
+  opts: { label?: string; account?: string } = {},
+): Promise<{ roots: RootInfo[] }> {
   const token = await ensureToken();
   const res = await fetch(`${DAEMON_URL}/api/root`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ providerAccount, value }),
+    body: JSON.stringify({ provider, value, ...opts }),
   });
   if (!res.ok) throw new Error(`submitRoot failed: ${res.status}`);
-  return (await res.json()) as { providerAccount: string; roots: string[] };
+  return (await res.json()) as { roots: RootInfo[] };
 }
 
 /** The user → agent direction channel: POST the chat text to the daemon, which

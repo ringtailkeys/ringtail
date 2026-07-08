@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { syncCredential, type Environment } from "@ringtail/sinks";
-import { discoverCredentials, putCredential, resolveRoot } from "@ringtail/store";
+import {
+  discoverCredentials,
+  listRootsFor,
+  putCredential,
+  resolveRoot,
+  resolveRootById,
+} from "@ringtail/store";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
 import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
@@ -94,6 +100,13 @@ export interface MintOpts {
    * the MCP `mintKey` tool routes through `proposeMintAction` (which drops it); this is
    * flipped `true` ONLY by `approveMintAction` after a nonce-carrying human approve. */
   confirmed?: boolean;
+  /**
+   * MULTI-ROOT (PRD §4.4): the SPECIFIC root value the daemon resolved from the human's
+   * selected `rootId`. Daemon-INTERNAL, set ONLY by `approveMintAction` — never by the agent
+   * (the agent authors names, not values). When set it overrides `resolveRoot` so the mint
+   * spends exactly the chosen root even when the provider holds several (which is ambiguous).
+   */
+  rootValue?: string;
 }
 
 /**
@@ -215,11 +228,16 @@ function scrub(reason: string, secrets: string[]): string {
  */
 async function sendWithRoot(
   action: MintAction,
+  rootOverride?: string,
 ): Promise<{ res: Response } | { error: MintResult }> {
   const { providerAccount } = action;
-  // 4. resolve the root key (pasted root wins; else an OAuth grant token, refreshed in place).
+  // 4. resolve the root key. A daemon-supplied `rootOverride` (the human's selected root id,
+  //    resolved to a value in approveMintAction) wins — it disambiguates a multi-root provider.
+  //    Otherwise: a pasted single root, else an OAuth grant token (refreshed in place).
   const root =
-    resolveRoot(providerAccount) ?? (await resolveGrantToken(providerOf(providerAccount)));
+    rootOverride ??
+    resolveRoot(providerAccount) ??
+    (await resolveGrantToken(providerOf(providerAccount)));
   if (usesRoot(action) && !root) {
     return {
       error: {
@@ -334,10 +352,11 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     }
   }
 
-  // 4 + 5. resolve the root key (pasted root, or an OAuth grant spent identically) and make
-  //         the ONE outbound call to the allowlisted host — off-allowlist redirect refused,
-  //         secrets scrubbed from any error. Shared with the discovery probe (sendWithRoot).
-  const sent = await sendWithRoot(action);
+  // 4 + 5. resolve the root key (the human's selected root via opts.rootValue when multi-root,
+  //         else a pasted single root or an OAuth grant) and make the ONE outbound call to the
+  //         allowlisted host — off-allowlist redirect refused, secrets scrubbed from any error.
+  //         Shared with the discovery probe (sendWithRoot).
+  const sent = await sendWithRoot(action, opts.rootValue);
   if ("error" in sent) return sent.error;
   const { res } = sent;
 
@@ -379,7 +398,10 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
  * consequential, so it needs no human approval. Returns the value-free `MintChoices`, or a
  * value-free `MintResult` when there's no spec, the probe fails, or nothing is discovered.
  */
-export async function runDiscovery(providerAccount: string): Promise<MintChoices | MintResult> {
+export async function runDiscovery(
+  providerAccount: string,
+  rootOverride?: string,
+): Promise<MintChoices | MintResult> {
   const spec = getDiscoverySpec(providerOf(providerAccount));
   if (!spec) {
     return {
@@ -397,7 +419,9 @@ export async function runDiscovery(providerAccount: string): Promise<MintChoices
   // The structural floor still applies to the probe url (allowlist + header hygiene).
   const rejected = structuralReject(probe);
   if (rejected) return rejected;
-  const sent = await sendWithRoot(probe);
+  // A `rootOverride` runs discovery against the human's SELECTED root (multi-root, deferred
+  // to approve time); otherwise the single stored root/grant, as at propose time.
+  const sent = await sendWithRoot(probe, rootOverride);
   if ("error" in sent) return sent.error;
   let body: unknown;
   try {
@@ -535,12 +559,19 @@ export async function proposeMintAction(
     // Not a write → run it now, but never honor an agent-supplied confirm.
     return { result: await executeMintAction(action, { ...opts, confirmed: false }) };
   }
+  // MULTI-ROOT (PRD §4.4): when the provider holds >1 root the mint can't silently pick one —
+  // the human must choose WHICH via the value-free root menu. `resolveRoot` is ambiguous here
+  // (returns null), so discovery can't run yet; it's DEFERRED to approve time against the
+  // chosen root. Single/zero root → the existing guided path (discovery runs now).
+  const roots = listRootsFor(action.providerAccount);
+  const multiRoot = roots.length > 1;
+
   // GUIDED least-privilege (PRD §4.5): a `discover`-flagged consequential mint runs the
   // value-free discovery probe FIRST, then parks the discovered menu as `choices`. Discovery
   // failing (no spec / probe error / nothing found) rejects the proposal — never park a mint
   // whose {{RESOURCE}}/{{PERMISSION}} placeholders can't be filled.
   let choices: MintChoices | undefined;
-  if (action.discover) {
+  if (action.discover && !multiRoot) {
     const disc = await runDiscovery(action.providerAccount);
     if ("status" in disc) return { result: disc }; // a MintResult → discovery failed, don't park
     if (disc.resources.length === 0) {
@@ -553,6 +584,37 @@ export async function proposeMintAction(
       };
     }
     choices = disc;
+  } else if (action.discover && multiRoot) {
+    // Defer resource discovery to approve time. Surface the spec-level permission menu + the
+    // roots to pick from NOW (permissions are root-independent); `resources` fill in once the
+    // human picks a root. Reject value-free if the provider has no spec (can't guide it).
+    const spec = getDiscoverySpec(providerOf(action.providerAccount));
+    if (!spec) {
+      return {
+        result: {
+          providerAccount: action.providerAccount,
+          status: "rejected",
+          reason: `no discovery spec for ${providerOf(action.providerAccount)} — cannot run a guided mint`,
+        },
+      };
+    }
+    choices = {
+      resources: [],
+      permissions: spec.permissions,
+      suggestedPermission: spec.permissions[0] ?? "",
+      supportsExpiry: spec.supportsExpiry,
+      roots,
+    };
+  } else if (multiRoot) {
+    // A consequential but NON-guided mint against a multi-root provider still needs the human
+    // to pick which root to spend — park just the root menu (no resource/permission steering).
+    choices = {
+      resources: [],
+      permissions: [],
+      suggestedPermission: "",
+      supportsExpiry: false,
+      roots,
+    };
   }
   const id = randomBytes(6).toString("hex");
   const nonce = randomBytes(24).toString("hex");
@@ -598,16 +660,45 @@ export async function approveMintAction(
   }
   pendingMints.delete(nonce);
   let action = parked.action;
-  if (parked.choices) {
-    const applied = applySelection(action, selection, parked.choices);
-    if ("reject" in applied) {
-      return {
-        providerAccount: action.providerAccount,
-        status: "rejected",
-        reason: applied.reject,
-      };
+  const reject = (reason: string): MintResult => ({
+    providerAccount: action.providerAccount,
+    status: "rejected",
+    reason,
+  });
+
+  // MULTI-ROOT (PRD §4.4): the parked choice offered >1 root → a root selection is REQUIRED and
+  // validated against the enumerated ids (a compromised dashboard can't inject an arbitrary
+  // root — same "must match an offered option" guard as the resource/permission pick). The
+  // daemon resolves the VALUE by the chosen id and spends exactly that root.
+  let rootValue: string | undefined;
+  const rootChoices = parked.choices?.roots;
+  if (rootChoices && rootChoices.length > 0) {
+    if (!selection?.rootId) {
+      return reject("a root selection is required — this provider holds multiple roots");
     }
+    if (!rootChoices.some((r) => r.id === selection.rootId)) {
+      return reject("selected root is not one of the offered roots");
+    }
+    const resolved = resolveRootById(selection.rootId);
+    if (!resolved) return reject("selected root is no longer available");
+    rootValue = resolved;
+  }
+
+  // GUIDED (discover) mint: run discovery against the CHOSEN root when multi-root (deferred
+  // from propose), else use the choices discovered at propose (single-root). Then validate the
+  // resource/permission pick + substitute the least-privilege placeholders.
+  if (parked.action.discover) {
+    let choices = parked.choices;
+    if (rootValue) {
+      const disc = await runDiscovery(action.providerAccount, rootValue);
+      if ("status" in disc) return disc; // discovery against the chosen root failed → value-free
+      choices = disc;
+    }
+    if (!choices) return reject("guided mint lost its discovered choices");
+    const applied = applySelection(action, selection, choices);
+    if ("reject" in applied) return reject(applied.reject);
     action = applied.action;
   }
-  return executeMintAction(action, { ...parked.opts, confirmed: true });
+
+  return executeMintAction(action, { ...parked.opts, confirmed: true, rootValue });
 }

@@ -43,13 +43,19 @@ export interface MockOAuth {
 
 const b64url = (buf: Buffer): string => buf.toString("base64url");
 
-export function startMockOAuth(): MockOAuth {
+export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
   const authSeen: string[] = [];
   const mintSeen: Array<Record<string, unknown>> = [];
   // code → the PKCE challenge presented at /authorize, verified at /token.
   const challenges = new Map<string, string>();
-  const validBearer = (auth: string | null): boolean =>
-    auth === `Bearer ${MOCK_OAUTH_ACCESS}` || auth === `Bearer ${MOCK_OAUTH_REFRESHED_ACCESS}`;
+  // The OAuth-issued sentinels plus any PASTED-ROOT values the multi-root test vaults — a
+  // discovery/mint against the human-selected root must present that root's value as the bearer.
+  const bearers = new Set([
+    `Bearer ${MOCK_OAUTH_ACCESS}`,
+    `Bearer ${MOCK_OAUTH_REFRESHED_ACCESS}`,
+    ...extraBearers.map((b) => `Bearer ${b}`),
+  ]);
+  const validBearer = (auth: string | null): boolean => auth !== null && bearers.has(auth);
 
   const server = Bun.serve({
     port: 0,

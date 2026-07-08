@@ -13,6 +13,8 @@ import {
 } from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
+// The value-free root registry view (PRD §4.4) — rides the mint choice + the intake list.
+export type { RootInfo } from "@ringtail/store";
 
 // The generative-UI contract (Wizard/Step/Action + the env axis) — the surface
 // the daemon validates and the dashboard renders. Re-exported through the public door.

@@ -30,6 +30,8 @@ export interface DiscoverySpec {
   supportsExpiry: boolean;
 }
 
+import type { RootInfo } from "@ringtail/store";
+
 /** A value-free discovered resource — id + name only, NEVER a secret. */
 export interface DiscoveredResource {
   id: string;
@@ -47,6 +49,13 @@ export interface MintChoices {
   /** The narrowest permission (permissions[0]) — the agent suggests, the human confirms/edits. */
   suggestedPermission: string;
   supportsExpiry: boolean;
+  /**
+   * MULTI-ROOT (PRD §4.4): present ONLY when the provider holds >1 root — the value-free
+   * roots the human picks WHICH to spend (labels/accounts/ids, NEVER a value). When set, the
+   * human's `selection.rootId` MUST be one of these ids; resource discovery is then run
+   * against the CHOSEN root at approve time. A single-root provider omits this (no regression).
+   */
+  roots?: RootInfo[];
 }
 
 /** The human's steered selection, posted back with the approval nonce. Intent only. */
@@ -57,6 +66,12 @@ export interface MintSelection {
   permission: string;
   /** Optional expiry (only honored when the spec supportsExpiry). ISO date or provider units. */
   expiry?: string;
+  /**
+   * MULTI-ROOT (PRD §4.4): the chosen root's id — REQUIRED when the parked choice offered
+   * `roots` (>1 root). Must be one of the enumerated ids, so a compromised dashboard cannot
+   * inject an arbitrary root; the daemon resolves the value by this id, never trusts a value.
+   */
+  rootId?: string;
 }
 
 /**

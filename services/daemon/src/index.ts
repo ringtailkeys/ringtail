@@ -14,7 +14,7 @@ import {
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { clearSession, getSession, listRootAccounts, putRoot, putSession } from "@ringtail/store";
+import { addRoot, clearSession, getSession, listRoots, putRoot, putSession } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import {
@@ -296,23 +296,38 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     }
   });
 
-  // POST /api/root — the DASHBOARD submits a per-account ROOT key (the master key
-  // that MINTS other keys). Same trust path as a paste: user → daemon → the global
-  // ~/.ringtail vault; the AGENT never submits or sees a root key. Body
-  // `{ providerAccount, value }`. The value is stored 0600 and NEVER echoed — the
-  // response carries the provider(+account) NAME only (check:no-leak stays green).
-  // Token-gated like /mcp.
+  // POST /api/root — the DASHBOARD submits a ROOT key (the master key that MINTS other
+  // keys). Same trust path as a paste: user → daemon → the global ~/.ringtail vault; the
+  // AGENT never submits or sees a root key. Two body shapes:
+  //   { provider, value, label?, account? } → a NAMED root in the multi-root registry
+  //       (PRD §4.4) — a provider can hold many (e.g. "prod" + "staging"), told apart by label.
+  //   { providerAccount, value }            → the legacy single-root path (upsert), kept working.
+  // The value is stored 0600 and NEVER echoed — the response carries the value-free registry
+  // (ids/labels/accounts, no values) so check:no-leak stays green. Token-gated like /mcp.
   app.post("/api/root", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
     const body = (await c.req.json().catch(() => ({}))) as {
       providerAccount?: string;
+      provider?: string;
+      label?: string;
+      account?: string;
       value?: string;
     };
-    if (!body.providerAccount || !body.value) {
-      return c.json({ error: "providerAccount and value required" }, 400);
+    if (!body.value || (!body.provider && !body.providerAccount)) {
+      return c.json({ error: "provider (or providerAccount) and value required" }, 400);
     }
-    putRoot(body.providerAccount, body.value); // value → disk, never returned
-    return c.json({ ok: true, providerAccount: body.providerAccount, roots: listRootAccounts() });
+    if (body.provider) {
+      // Named-root registry path — always ADDS (a provider can hold several).
+      addRoot({
+        provider: body.provider,
+        value: body.value,
+        ...(body.label ? { label: body.label } : {}),
+        ...(body.account ? { account: body.account } : {}),
+      }); // value → disk, never returned
+    } else {
+      putRoot(body.providerAccount as string, body.value); // legacy single-root upsert
+    }
+    return c.json({ ok: true, roots: listRoots() });
   });
 
   // ── OAuth "Connect a provider" (PRD §4.9) — loopback redirect + PKCE ─────────
@@ -362,7 +377,7 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       id?: string;
       confirmed?: boolean;
       nonce?: string;
-      selection?: { resource: string; permission: string; expiry?: string };
+      selection?: { resource: string; permission: string; expiry?: string; rootId?: string };
     };
     // Approve a parked consequential mint by its server nonce — the UNFORGEABLE human
     // channel. The agent never received this nonce (it went to the dashboard over SSE),
