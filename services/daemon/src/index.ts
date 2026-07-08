@@ -330,6 +330,12 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     if (body.nonce) {
       const result = await approveMintAction(body.nonce);
       if (result.status !== "rejected") store.clearPendingMint(body.nonce);
+      // P1: the human approved a real mint → flip its grid cell to validated so the mint
+      // always shows in the grid without the agent calling updateStatus. env defaults to
+      // `local` (the MVP + the mintKey tool's default). ponytail: approveMintAction returns
+      // only the value-free MintResult (no env); a deployed-env mint's exact cell still
+      // needs updateStatus. Thread env through PendingMint/MintResult if that matters.
+      if (result.status === "minted") store.markMinted(result.providerAccount, "local");
       return c.json(result);
     }
     if (!body.id) return c.json({ error: "id required" }, 400);

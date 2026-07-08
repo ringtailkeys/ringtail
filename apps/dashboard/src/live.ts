@@ -87,6 +87,23 @@ export async function approveAction(id: string, confirmed?: boolean): Promise<un
   return res.json();
 }
 
+/** The UNFORGEABLE human approve for a PARKED consequential mint (the PendingMints
+ * card). A `{{ROOT}}`-spending write parks under a server nonce that rides the SSE
+ * snapshot to the dashboard ONLY; posting it back to /api/action runs the real mint
+ * with the stored root key. The agent never received this nonce, so it can't self-
+ * approve the write it authored. Body is `{ nonce }` (NOT `{ id, confirmed }` — that's
+ * the mapped-action path). Returns the value-free run result; throws on transport failure. */
+export async function approveMint(nonce: string): Promise<unknown> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ nonce }),
+  });
+  if (!res.ok) throw new Error(`approveMint failed: ${res.status}`);
+  return res.json();
+}
+
 export interface DetectedAgent {
   id: string;
   name: string;
