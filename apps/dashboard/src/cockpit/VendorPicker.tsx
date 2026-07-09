@@ -53,21 +53,29 @@ export function VendorLogo({ id, size = 22 }: { id: string; size?: number }) {
 export function VendorPicker({
   value,
   onPick,
+  onCustom,
+  selectedLabel,
 }: {
   /** The currently-picked canonical id (or null). */
   value: string | null;
   onPick: (id: string) => void;
+  /** Free-type ANY vendor: when the query matches NO canonical vendor, the "Connect
+   * '<typed>' — agent-guided setup" row calls this with the raw typed query. */
+  onCustom?: (query: string) => void;
+  /** Display label for a picked vendor not in the canonical set (a custom one). */
+  selectedLabel?: string;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const groups = useMemo(() => groupVendors(filterVendors(VENDORS, query)), [query]);
   const picked = value ? (VENDORS.find((v) => v.id === value) ?? null) : null;
+  const typed = query.trim();
 
   return (
     <div style={{ position: "relative" }}>
       <input
         placeholder="search a provider (e.g. resend, cloudflare, neon)…"
-        value={open ? query : picked ? picked.label : query}
+        value={open ? query : ((picked ? picked.label : selectedLabel) ?? query)}
         onFocus={() => {
           setOpen(true);
           setQuery("");
@@ -82,18 +90,48 @@ export function VendorPicker({
       />
       {open && (
         <div style={dropdownStyle}>
-          {groups.length === 0 && (
-            <div
-              style={{
-                padding: "10px 12px",
-                fontFamily: font.mono,
-                fontSize: 12,
-                color: "var(--ink-soft)",
-              }}
-            >
-              no provider matches “{query}”
-            </div>
-          )}
+          {groups.length === 0 &&
+            (onCustom && typed ? (
+              // The "connect ANY vendor" path (the Dodo case): no canonical match → offer an
+              // agent-guided setup for the free-typed name (paste + sink only, never minting).
+              <button
+                type="button"
+                data-testid="custom-vendor-row"
+                onMouseDown={() => onCustom(typed)}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "flex-start",
+                  gap: 2,
+                  width: "100%",
+                  padding: "10px 12px",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  font: "inherit",
+                  color: "var(--ink)",
+                }}
+              >
+                <span style={{ fontFamily: font.ui, fontWeight: 600, fontSize: 13 }}>
+                  Connect “{typed}” — agent-guided setup
+                </span>
+                <span style={{ fontFamily: font.mono, fontSize: 10, color: "var(--ink-soft)" }}>
+                  not in the catalogue · paste a key, your agent guides the signup
+                </span>
+              </button>
+            ) : (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  fontFamily: font.mono,
+                  fontSize: 12,
+                  color: "var(--ink-soft)",
+                }}
+              >
+                no provider matches “{query}”
+              </div>
+            ))}
           {groups.map((g) => (
             <div key={g.category}>
               <div

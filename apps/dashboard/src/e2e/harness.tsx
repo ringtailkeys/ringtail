@@ -2,9 +2,11 @@ import type { MintSelection, PendingMint } from "@ringtail/core";
 import { allKeyframes, cssVars, font, moonlit } from "@ringtail/ui";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { ConnectCommand } from "../cockpit/ConnectCommand";
 import { ConnectPanel } from "../cockpit/ConnectPanel";
 import { PendingMints } from "../cockpit/PendingMints";
 import { VendorPicker } from "../cockpit/VendorPicker";
+import { agentAddCommands } from "../live";
 
 /**
  * E2e harness — mounts the REAL compiled journey components (VendorPicker + the guided-mint
@@ -63,7 +65,13 @@ function Harness() {
         }}
       >
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <h2 style={{ fontFamily: font.display }}>vendor picker</h2>
+          <h2 style={{ fontFamily: font.display }}>connect your agent</h2>
+          <ConnectCommand
+            agentName="Claude Code"
+            commands={agentAddCommands("http://127.0.0.1:4877", "e2e-token-123")}
+          />
+
+          <h2 style={{ fontFamily: font.display, marginTop: 40 }}>vendor picker</h2>
           <div
             data-testid="picked"
             style={{ fontFamily: font.mono, fontSize: 12, marginBottom: 8 }}
@@ -79,7 +87,20 @@ function Harness() {
           />
 
           <h2 style={{ fontFamily: font.display, marginTop: 40 }}>connect a provider (3 modes)</h2>
-          <ConnectPanel live={false} />
+          {/* Seed a needs-creds OAuth connector (cloudflare) + a stored root (resend) so the
+              e2e can drive both the "OAuth needs setup — guidance, not blank" branch and the
+              "root already stored" confirm without a live daemon. */}
+          <ConnectPanel
+            live={false}
+            agentName="Claude Code"
+            statusSeed={{
+              connected: [],
+              connectors: [
+                { id: "cloudflare", connected: false, needsClientCreds: true, scopes: [] },
+              ],
+              roots: [{ id: "r_resend", provider: "resend", label: "prod", createdAt: 1 }],
+            }}
+          />
 
           <h2 style={{ fontFamily: font.display, marginTop: 40 }}>guided-mint choice card</h2>
           <PendingMints

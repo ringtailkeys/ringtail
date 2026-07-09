@@ -1,6 +1,7 @@
 import { Badge, Button, Eyebrow, font } from "@ringtail/ui";
 import { useEffect, useState } from "react";
 import { fetchAgents, type DetectedAgent } from "../live";
+import { ConnectCommand } from "./ConnectCommand";
 
 /**
  * The agent picker (architecture.md §"Entry & agent selection — OpenDesign pattern").
@@ -139,10 +140,20 @@ export function AgentPicker({
       )}
 
       {picked === "manual" && (
-        <p style={{ fontFamily: font.mono, fontSize: 12, color: "var(--ink-soft)", marginTop: 12 }}>
-          Guided/manual: you drive the wizard yourself — paste keys as the grid asks. No agent
-          required.
-        </p>
+        <div style={{ marginTop: 12 }}>
+          <p
+            style={{
+              fontFamily: font.mono,
+              fontSize: 12,
+              color: "var(--ink-soft)",
+              margin: "0 0 12px",
+            }}
+          >
+            Guided/manual: you drive the wizard yourself — paste keys as the grid asks. No agent
+            required. Or connect an agent anytime with the exact command below:
+          </p>
+          <ConnectCommand />
+        </div>
       )}
 
       {connectId && onConnect && (
