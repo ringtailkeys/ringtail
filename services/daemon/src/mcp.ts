@@ -13,6 +13,7 @@ import {
   type MintAction,
   MintActionSchema,
   proposeMintAction,
+  proposeProvision,
   proposeRotateAction,
   type RotateAction,
   RotateActionSchema,
@@ -373,6 +374,50 @@ export function buildMcpServer(
         ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
         env: env ?? "local",
       });
+      if (pending) store.addPendingMint(pending);
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // provisionProject(mints, vars?, env?) → THE BATCH ORCHESTRATOR (the North Star). "A new
+  // project provisions itself." The agent authors ONE batch of mint/wire actions — one per var
+  // that self-provisions from a connected root (each a normal mintKey template: a {{ROOT}} mint
+  // with `extract`, or a wire action like GoDaddy set-nameservers with no `extract`) — plus the
+  // project's full `vars` list (defaults to the grid's). The daemon parks the WHOLE batch under a
+  // SINGLE unforgeable nonce ("provision these N keys for <project>?"), and classifies the vars
+  // NOT in the batch with the value-free planner: mint-from-root · needs-root · guided-paste ·
+  // skip (a non-secret resource like DATABASE_URL is flagged, never faked). It returns
+  // needs-confirm + the value-free plan + the parked list — NEVER a value. On the human's ONE
+  // approval (POST /api/action with the nonce) every action runs through the same mint gate; each
+  // var reports its own value-free result (minted / ok / no-root / failed). The agent can never
+  // self-approve (it never receives the nonce). A structurally-doomed action rejects the batch up
+  // front rather than nagging a human to approve garbage.
+  tool<{ mints: MintAction[]; vars?: string[]; env?: GridEnv }>(
+    server,
+    "provisionProject",
+    {
+      description:
+        "Provision a whole project from your connected roots under ONE human approval. The agent authors a batch of mint/wire actions (one per self-provisioning var) + the project's var list; the daemon parks the whole batch under a single nonce and classifies the rest (mint-from-root / needs-root / guided-paste / skip). Returns needs-confirm + the value-free plan, never a value. A human approves the one nonce in the dashboard — the agent cannot self-approve.",
+      inputSchema: {
+        mints: z.array(MintActionSchema),
+        vars: z.array(z.string()).optional(),
+        env: GRID_ENV.optional(),
+      },
+    },
+    async ({ mints, vars, env }) => {
+      const snap = store.snapshot();
+      const project = snap.project;
+      // Default the var list to the ACTIVE project's grid (built from its `.env.example`).
+      const varList = vars ?? snap.grid.flatMap((r) => r.envVars);
+      const { result, pending } = await proposeProvision(
+        { mints, vars: varList, ...(project ? { project: project.name } : {}) },
+        {
+          ...engineOpts,
+          ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+          env: env ?? "local",
+        },
+      );
+      // Park the batch → its nonce rides the SSE snapshot to the dashboard (never the agent).
       if (pending) store.addPendingMint(pending);
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },

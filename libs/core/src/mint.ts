@@ -3,6 +3,8 @@ import { syncCredential, type Environment } from "@ringtail/sinks";
 import {
   appendRotation,
   discoverCredentials,
+  listConnectedProviders,
+  listRoots,
   listRootsFor,
   putCredential,
   readStore,
@@ -13,6 +15,7 @@ import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
 import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
 import { resolveGrantToken } from "./oauth";
+import { planProvision, type ProvisionItem } from "./provision";
 import { type RotationEffects, type RotationOutcome, runRotation } from "./rotate";
 import { DangerSchema, type PendingMint } from "./wizard";
 
@@ -457,7 +460,9 @@ export async function runDiscovery(
   } catch {
     return { providerAccount, status: "failed", reason: "discovery response was not JSON" };
   }
-  const list = pluck(body, spec.listPath);
+  // `listPath: ""` means the response body IS the array (e.g. GoDaddy `GET /v1/domains`
+  // returns a bare array, not a `{ data: [...] }` envelope) — pluck("") can't express that.
+  const list = spec.listPath === "" ? body : pluck(body, spec.listPath);
   if (!Array.isArray(list)) {
     return {
       providerAccount,
@@ -934,4 +939,194 @@ function rotationResult(o: RotationOutcome, providerAccount: string): MintResult
   const status: MintResult["status"] =
     o.state === "done" ? "minted" : o.state === "partial" ? "partial" : "failed";
   return { providerAccount, varName: o.varName, status, ...(o.reason ? { reason: o.reason } : {}) };
+}
+
+// ── BATCH PROVISION (the North Star): one approval provisions the whole project ──────────────
+//
+// "A new project provisions itself." The agent authors ONE batch of mint/wire actions (one per
+// self-provisioning var, from the connected roots) + hands the project's full var list; the
+// daemon parks the WHOLE batch under a SINGLE unforgeable nonce ("provision these N keys for
+// <project>?"), and on the human's ONE approval runs each through the SAME executeMintAction gate
+// (allowlist → root-substitute → sink) — no fork of the mint path. Partial success is fine; each
+// var reports its own value-free result. The vars NOT in the batch are classified by the value-
+// free planner (planProvision) so the human sees the whole picture: mint · needs-root · guided · skip.
+//
+// ponytail: a separate `pendingBatches` Map beside `pendingMints` — a batch is N-actions-under-1-
+// nonce, structurally distinct from a single parked mint. Same fail-safe (a restart drops pending
+// approvals; the agent re-proposes). Upgrade path: persist if approvals must survive a crash.
+
+const pendingBatches = new Map<string, { items: MintAction[]; opts: MintOpts; project?: string }>();
+
+/** The agent's batch proposal: the self-provisioning actions + the project's full var list. */
+export interface ProvisionProposeInput {
+  /** Agent-authored mint / wire actions — one per var that self-provisions THIS run (mint-from-
+   * root). A mint carries `extract.varName`; a wire action (e.g. GoDaddy set-nameservers) has no
+   * `extract`. All are executed under the SINGLE approval. */
+  mints: MintAction[];
+  /** Every env-var the project's `.env.example` declares — drives the plan for the vars NOT minted. */
+  vars: string[];
+  project?: string;
+}
+
+/** The value-free proposal result: what's parked under the one approval + the plan for the rest. */
+export interface ProvisionProposeResult {
+  result: {
+    status: "needs-confirm" | "rejected" | "ok";
+    id?: string;
+    reason?: string;
+    /** The vars being minted/wired under this ONE approval — NAMES + provider + method, no value. */
+    parked: Array<{ varName?: string; providerAccount: string; method: string }>;
+    /** The plan for the vars NOT covered by a parked action (needs-root / guided-paste / skip). */
+    plan: ProvisionItem[];
+    /** How many actions this one approval covers. */
+    count: number;
+  };
+  /** Present only when parked: the SSE card for the dashboard (nonce dashboard-only, never the agent). */
+  pending?: PendingMint;
+}
+
+/**
+ * PROPOSE a whole-project provision (the `provisionProject` MCP entry). Structurally-doomed
+ * actions (bad host / control-char header) reject the WHOLE batch up front — never park garbage
+ * for a human to approve. The mintable vars are parked under ONE nonce; the rest are classified
+ * by the value-free planner. Nothing executes here — a human approves the one nonce via
+ * `POST /api/action`, and the agent never receives the nonce (it rides the SSE snapshot only).
+ */
+export async function proposeProvision(
+  input: ProvisionProposeInput,
+  opts: MintOpts,
+): Promise<ProvisionProposeResult> {
+  // Reject a structurally-doomed batch before parking anything (allowlist + header hygiene).
+  for (const a of input.mints) {
+    const rejected = structuralReject(a);
+    if (rejected) {
+      return {
+        result: {
+          status: "rejected",
+          reason: `${a.providerAccount}: ${rejected.reason}`,
+          parked: [],
+          plan: [],
+          count: 0,
+        },
+      };
+    }
+  }
+
+  // The vars covered by a parked mint don't need a plan classification — plan only the rest.
+  const mintedVars = new Set(
+    input.mints.map((m) => m.extract?.varName).filter((v): v is string => Boolean(v)),
+  );
+  const plan = planProvision({
+    vars: input.vars.filter((v) => !mintedVars.has(v)),
+    roots: listRoots(),
+    grants: listConnectedProviders(),
+    ...(input.project ? { project: input.project } : {}),
+  });
+  const parked = input.mints.map((m) => ({
+    ...(m.extract?.varName ? { varName: m.extract.varName } : {}),
+    providerAccount: m.providerAccount,
+    method: m.method,
+  }));
+
+  // Nothing to mint → no approval needed; hand back the plan so the human connects roots / pastes.
+  if (input.mints.length === 0) {
+    return {
+      result: {
+        status: "ok",
+        reason: "nothing to mint from your connected roots — connect roots / paste the rest",
+        parked,
+        plan: plan.items,
+        count: 0,
+      },
+    };
+  }
+
+  const id = randomBytes(6).toString("hex");
+  const nonce = randomBytes(24).toString("hex");
+  pendingBatches.set(nonce, {
+    items: input.mints,
+    opts,
+    ...(input.project ? { project: input.project } : {}),
+  });
+  const pending: PendingMint = {
+    id,
+    nonce,
+    providerAccount: input.mints[0]?.providerAccount ?? "",
+    method: "BATCH",
+    danger: "confirm",
+    batch: true,
+    count: input.mints.length,
+    ...(parked[0]?.varName ? { varName: parked[0].varName } : {}),
+  };
+  return {
+    result: {
+      status: "needs-confirm",
+      id,
+      reason: `human approval required — provision ${input.mints.length} key(s)${
+        input.project ? ` for ${input.project}` : ""
+      }`,
+      parked,
+      plan: plan.items,
+      count: input.mints.length,
+    },
+    pending,
+  };
+}
+
+/** One batch execution outcome — a value-free MintResult per parked action. */
+export interface ProvisionApproveResult {
+  results: MintResult[];
+}
+
+/**
+ * The HUMAN approves the whole batch by posting its server nonce (dashboard-only). Every parked
+ * action runs through the SAME `executeMintAction` gate with the ONE `confirmed:true` the system
+ * sets — mint keys land in the sink, wire actions (no extract) succeed as `ok`. Partial success is
+ * expected: a var whose provider holds multiple roots without a `rootSelections` pick comes back
+ * `no-root` (executeMintAction's own ambiguity guard) rather than silently picking one. Value-free
+ * throughout — each result is names + status, never a secret.
+ */
+export async function approveProvision(
+  nonce: string,
+  /** Optional MULTI-ROOT picks (varName → chosen root id) for a var whose provider holds >1 root.
+   * Validated against that provider's connected roots so a compromised dashboard can't inject an
+   * arbitrary (other-provider) root value into this provider's allowlisted call. */
+  rootSelections?: Record<string, string>,
+): Promise<ProvisionApproveResult | { rejected: string }> {
+  const parked = nonce ? pendingBatches.get(nonce) : undefined;
+  if (!parked) return { rejected: "unknown or already-used approval" };
+  pendingBatches.delete(nonce);
+
+  const results: MintResult[] = [];
+  for (const action of parked.items) {
+    const varName = action.extract?.varName;
+    const pickId = varName ? rootSelections?.[varName] : undefined;
+    let rootValue: string | undefined;
+    if (pickId) {
+      // The pick MUST be one of this provider's connected roots (same guard as approveMintAction).
+      if (!listRootsFor(action.providerAccount).some((r) => r.id === pickId)) {
+        results.push({
+          providerAccount: action.providerAccount,
+          ...(varName ? { varName } : {}),
+          status: "rejected",
+          reason: "selected root is not one of the connected roots for this provider",
+        });
+        continue;
+      }
+      rootValue = resolveRootById(pickId) ?? undefined;
+    }
+    results.push(
+      await executeMintAction(action, {
+        ...parked.opts,
+        confirmed: true,
+        ...(rootValue ? { rootValue } : {}),
+      }),
+    );
+  }
+  return { results };
+}
+
+/** Is `nonce` a parked BATCH (vs a single parked mint)? Lets the daemon route the approve. */
+export function isBatchNonce(nonce: string): boolean {
+  return pendingBatches.has(nonce);
 }
