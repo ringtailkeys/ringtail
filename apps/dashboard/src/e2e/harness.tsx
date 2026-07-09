@@ -86,21 +86,24 @@ function Harness() {
             }}
           />
 
-          <h2 style={{ fontFamily: font.display, marginTop: 40 }}>connect a provider (3 modes)</h2>
+          <h2 style={{ fontFamily: font.display, marginTop: 40 }}>connect a provider</h2>
           {/* Seed a needs-creds OAuth connector (cloudflare) + a stored root (resend) so the
               e2e can drive both the "OAuth needs setup — guidance, not blank" branch and the
-              "root already stored" confirm without a live daemon. */}
-          <ConnectPanel
-            live={false}
-            agentName="Claude Code"
-            statusSeed={{
-              connected: [],
-              connectors: [
-                { id: "cloudflare", connected: false, needsClientCreds: true, scopes: [] },
-              ],
-              roots: [{ id: "r_resend", provider: "resend", label: "prod", createdAt: 1 }],
-            }}
-          />
+              "root already stored" confirm without a live daemon. Wrapped in an id'd div so the
+              screenshot driver can clip exactly the panel. */}
+          <div id="connect-panel-wrap">
+            <ConnectPanel
+              live={false}
+              agentName="Claude Code"
+              statusSeed={{
+                connected: [],
+                connectors: [
+                  { id: "cloudflare", connected: false, needsClientCreds: true, scopes: [] },
+                ],
+                roots: [{ id: "r_resend", provider: "resend", label: "prod", createdAt: 1 }],
+              }}
+            />
+          </div>
 
           <h2 style={{ fontFamily: font.display, marginTop: 40 }}>guided-mint choice card</h2>
           <PendingMints

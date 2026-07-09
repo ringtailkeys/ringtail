@@ -1,31 +1,23 @@
 import { Badge, Button, Card, Eyebrow, Rocco, font, radius } from "@ringtail/ui";
-import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useState } from "react";
 import { type ConnectStatus, connectStart, fetchConnectStatus, submitRoot } from "../live";
 import { VendorLogo, VendorPicker } from "./VendorPicker";
 import { type Vendor, customVendor, findVendor } from "./vendors";
 
 /**
- * The connect surface (PRD §4.8 + §4.9) — the ONE human moment, now vendor-driven and
- * three-moded, and (this pass) built to HOLD the user through it. Pick a provider from the
- * canonical autocomplete OR free-type any vendor (the Dodo case), then connect it:
+ * The connect surface (PRD §4.8 + §4.9) — the ONE human moment. Progressive disclosure: pick
+ * a provider, then see a SMALL card with exactly ONE obvious next step, everything else one
+ * subtle click away. No wall of text (the previous pass overcorrected into a mess).
  *
- *   (a) OAuth "Connect"  → POST /api/connect/start → open the authorizeUrl in a new tab →
- *       poll GET /api/connect/status until the grant lands → "Connected ✓ (scopes · expiry)".
- *       If the daemon has no OAuth app configured we DON'T hide it — we say so and point at
- *       paste / agent-guide.
- *   (b) Paste a named root (label + account + value) → POST /api/root. The value field is the
- *       ONLY place a secret is typed; it goes straight to the daemon and is dropped from state
- *       right after the POST — NEVER rendered back.
- *   (c) Agent-guided signup — real BUTTONS that open the provider's signup / manage-keys page
- *       and hand a connected agent a ready copy-able prompt to walk you to the key.
+ *   • OAuth-ready provider          → a single "Connect … with OAuth" button. That's it.
+ *   • Everyone else (Creem, Resend, → a single-row paste (label/account hidden behind
+ *     custom vendors)                 an "add a label" toggle).
+ *   • Don't have a key yet?         → one subtle line that expands to the agent-guided
+ *                                      signup (buttons + copy-prompt), collapsed by default.
  *
- * Holding the user: a legend (roots are per-provider machine-global; minted keys are
- * per-project/per-env — the grid's LOCAL·DEV·STAGING·PROD), a clear CONFIRM when a provider
- * already holds a root, and an explicit next-step after a root lands / a provider connects.
- *
- * Value-free by construction: the picker/status/roots surfaces carry ids · labels · scopes ·
- * expiry only. THE GUARANTEE (agent never sees a value) holds — the one secret input posts
- * direct to the daemon vault, never through the agent, never echoed.
+ * Value-free by construction: picker/status/roots carry ids · labels · scopes · expiry only.
+ * THE GUARANTEE holds — the one secret input posts direct to the daemon vault, is dropped from
+ * state right after the POST, and is NEVER rendered back.
  */
 export function ConnectPanel({
   live,
@@ -33,8 +25,7 @@ export function ConnectPanel({
   statusSeed,
 }: {
   live?: boolean;
-  /** The connected coding agent's name (snapshot.agent) — enables the "hand your agent a
-   * prompt" affordance in the agent-guided mode. Absent → the copy-prompt still renders. */
+  /** The connected coding agent's name (snapshot.agent) — personalises the agent-guide prompt. */
   agentName?: string;
   /** Pre-seeded connect status (Storybook/e2e) — exercise the OAuth needs-creds /
    * already-connected / root-held branches without a live daemon. */
@@ -53,7 +44,8 @@ export function ConnectPanel({
   const connector = vendor ? (status.connectors.find((c) => c.id === vendor.id) ?? null) : null;
   const storedRoots = vendor ? (status.roots?.filter((r) => r.provider === vendor.id) ?? []) : [];
   const hasRoot = storedRoots.length > 0;
-  const held = Boolean(connected) || hasRoot;
+  const needsCreds = connector?.needsClientCreds ?? false;
+  const oauthReady = Boolean(vendor?.oauth) && !connected && !needsCreds;
 
   const refresh = useMemo(
     () => () => {
@@ -70,13 +62,29 @@ export function ConnectPanel({
       <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <Rocco pose="waving" size={44} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Eyebrow>connect a provider · the one human moment</Eyebrow>
-          <p style={helpText}>
-            Search a provider (or type any vendor), then connect it: <strong>OAuth</strong> (one
-            click), <strong>paste a root key</strong> (goes straight to Ringtail), or let the{" "}
-            <strong>agent guide</strong> the signup.
-          </p>
-          <div style={{ maxWidth: 460 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Eyebrow>connect a provider · the one human moment</Eyebrow>
+            {/* The roots-vs-minted mental model, once, behind a subtle "?" — not a wall on every pick. */}
+            <span
+              title="roots — per-provider, machine-global (add once, reused everywhere) · minted keys — per-project / per-env (the grid's LOCAL · DEV · STAGING · PROD)"
+              style={{
+                cursor: "help",
+                fontFamily: font.mono,
+                fontSize: 11,
+                color: "var(--ink-soft)",
+                border: "1px solid var(--line)",
+                borderRadius: radius.pill,
+                width: 16,
+                height: 16,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              ?
+            </span>
+          </div>
+          <div style={{ maxWidth: 460, marginTop: 8 }}>
             <VendorPicker
               value={vendor && !vendor.custom ? vendor.id : null}
               selectedLabel={vendor?.label}
@@ -85,81 +93,62 @@ export function ConnectPanel({
             />
           </div>
 
-          <Legend />
-
           {vendor && (
-            <div style={{ marginTop: 14 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 10,
-                  flexWrap: "wrap",
-                }}
-              >
-                <VendorLogo id={vendor.id} size={26} />
+            <div style={pickedCard}>
+              {/* One-line vendor header. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <VendorLogo id={vendor.id} size={22} />
                 <span style={{ fontFamily: font.ui, fontWeight: 600 }}>{vendor.label}</span>
-                <Badge tone="berry">{vendor.category}</Badge>
-                {vendor.custom && <Badge tone="amber">custom · no recipe</Badge>}
-                {connected && (
-                  <span style={{ fontFamily: font.mono, fontSize: 11, color: "var(--green)" }}>
-                    ✓ connected{connected.scopes.length ? ` · ${connected.scopes.join(", ")}` : ""}
+                <span style={{ ...mono11, color: "var(--ink-soft)" }}>· {vendor.category}</span>
+                {vendor.custom && <Badge tone="amber">custom</Badge>}
+                {connected && <Pill>✓ connected</Pill>}
+                {!connected && hasRoot && <Pill>✓ root stored</Pill>}
+              </div>
+
+              {/* Exactly ONE primary action. */}
+              <div style={{ marginTop: 12 }}>
+                {connected ? (
+                  <span style={{ ...mono11, color: "var(--green)" }}>
+                    ✓ {vendor.label} connected
+                    {connected.scopes.length ? ` · ${connected.scopes.join(", ")}` : ""}
                     {connected.expiresAt
                       ? ` · expires ${new Date(connected.expiresAt).toLocaleDateString()}`
                       : ""}
                   </span>
+                ) : oauthReady ? (
+                  <OAuthConnect
+                    provider={vendor.id}
+                    label={vendor.label}
+                    live={Boolean(live)}
+                    onPoll={refresh}
+                  />
+                ) : (
+                  <PasteRow
+                    provider={vendor.id}
+                    label={vendor.label}
+                    live={Boolean(live)}
+                    varSeed={vendor.custom ? vendor.defaultVar : undefined}
+                    onStored={refresh}
+                  />
                 )}
               </div>
 
-              {/* "Do I have a root key?" — answerable at a glance. */}
-              {hasRoot && (
-                <p style={{ ...mono11, color: "var(--green)", margin: "0 0 8px" }}>
-                  ✓ root already stored for {vendor.label} ({storedRoots.length} named
-                  {storedRoots.length > 1 ? " roots" : " root"}) · machine-global, reused across
-                  every project
-                </p>
+              {/* Subtle escape hatch: OAuth exists but needs a one-time daemon setup. */}
+              {vendor.oauth && needsCreds && !connected && (
+                <Disclose summary="OAuth available with a one-time setup — how to enable →">
+                  <p style={{ ...mono11, color: "var(--ink-soft)", margin: 0 }}>
+                    Register an OAuth app with {vendor.label} and set{" "}
+                    <code>RINGTAIL_OAUTH_{vendor.id.toUpperCase()}_CLIENT_ID</code> (and secret, if
+                    required) in the daemon's environment, then restart <code>ringtail up</code>.
+                  </p>
+                </Disclose>
               )}
 
-              {/* A SINK (Infisical) — written TO, not minted FROM. One-line distinction. */}
-              {vendor.sink && (
-                <p style={{ ...mono11, color: "var(--ink-soft)", margin: "0 0 8px" }}>
-                  {vendor.label} is a <strong>sink</strong> — Ringtail WRITES minted keys here. It's
-                  not a key source to mint from; paste its access token so keys can land.
-                </p>
-              )}
-
-              {/* (a) OAuth mode — only for a canonical OAuth-capable provider. Never silently
-                  hidden: needs-creds still shows, routed to paste / agent-guide. */}
-              {vendor.oauth && !connected && (
-                <OAuthMode
-                  provider={vendor.id}
-                  live={Boolean(live)}
-                  needsCreds={connector?.needsClientCreds ?? false}
-                  onPoll={refresh}
-                />
-              )}
-
-              {/* (b) paste a named root — always available (the only path for a custom vendor) */}
-              <PasteRootMode
-                provider={vendor.id}
-                live={Boolean(live)}
-                varSeed={vendor.custom ? vendor.defaultVar : undefined}
-                onStored={refresh}
-              />
-
-              {/* (c) agent-guided signup — real buttons + a copy-able agent prompt */}
-              <AgentGuided vendor={vendor} connector={connector} agentName={agentName} />
-
-              {/* Hold them: the explicit next step once the provider is actually held. */}
-              {held && (
-                <p style={{ ...mono11, color: "var(--green)", marginTop: 10 }}>
-                  ✓ {vendor.label} connected — now ask your agent to provision a key (or it'll fill
-                  the grid's “missing” cells).
-                  {vendor.custom
-                    ? " No recipe for a custom vendor: it stays paste + sink (no auto-mint)."
-                    : ""}
-                </p>
+              {/* Subtle escape hatch: don't have a key yet — the agent walks you there. */}
+              {!connected && (
+                <Disclose summary="Don't have a key yet? Let your agent walk you there →">
+                  <AgentGuided vendor={vendor} connector={connector} agentName={agentName} />
+                </Disclose>
               )}
             </div>
           )}
@@ -169,49 +158,63 @@ export function ConnectPanel({
   );
 }
 
-// The legend — the two-axis mental model, spelled out so "are roots per-project or global?"
-// is answered without asking anyone.
-function Legend() {
+// A green "held" pill (green is SACRED — not a Badge tone — so it's built inline).
+function Pill({ children }: { children: ReactNode }) {
   return (
-    <div
+    <span
       style={{
-        display: "flex",
-        gap: 14,
-        flexWrap: "wrap",
-        marginTop: 10,
-        fontFamily: font.mono,
-        fontSize: 11,
-        color: "var(--ink-soft)",
+        ...mono11,
+        color: "var(--green)",
+        border: "1px solid color-mix(in srgb, var(--green) 40%, var(--line))",
+        borderRadius: radius.pill,
+        padding: "2px 8px",
       }}
     >
-      <span>
-        <strong style={{ color: "var(--green)" }}>roots</strong> — per-provider, machine-global (add
-        once, reused across every project)
-      </span>
-      <span>
-        <strong style={{ color: "var(--amber-deep)" }}>minted keys</strong> — per-project / per-env
-        (the grid's LOCAL · DEV · STAGING · PROD)
-      </span>
+      {children}
+    </span>
+  );
+}
+
+// A collapsed secondary line that expands in place — the whole progressive-disclosure trick.
+function Disclose({ summary, children }: { summary: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          ...mono11,
+          color: "var(--ink-soft)",
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        {summary}
+      </button>
+      {open && <div style={{ marginTop: 8 }}>{children}</div>}
     </div>
   );
 }
 
-// ── (a) OAuth ─────────────────────────────────────────────────────────────────
-function OAuthMode({
+// ── the ONE primary: OAuth ────────────────────────────────────────────────────
+function OAuthConnect({
   provider,
+  label,
   live,
-  needsCreds,
   onPoll,
 }: {
   provider: string;
+  label: string;
   live: boolean;
-  needsCreds: boolean;
   onPoll: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [waiting, setWaiting] = useState(false);
-  const [howOpen, setHowOpen] = useState(false);
 
   async function connect() {
     if (!live) return;
@@ -223,7 +226,6 @@ function OAuthMode({
       // Poll the value-free status while the user completes the flow in the other tab.
       setWaiting(true);
       const id = setInterval(onPoll, 2000);
-      // Stop polling after 90s regardless (the status also refreshes on re-focus/mount).
       setTimeout(() => clearInterval(id), 90_000);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -233,61 +235,45 @@ function OAuthMode({
   }
 
   return (
-    <div style={modeBox}>
-      <div style={modeHead}>a · connect with OAuth</div>
-      {needsCreds ? (
-        <>
-          <p style={{ ...mono11, color: "var(--ink-soft)", margin: "0 0 6px" }}>
-            OAuth needs a one-time app setup on this daemon — until then, paste a key or let the
-            agent guide you (both below).
-          </p>
-          <Button variant="ghost" size="sm" onClick={() => setHowOpen((v) => !v)}>
-            {howOpen ? "hide setup" : "how to enable OAuth"}
-          </Button>
-          {howOpen && (
-            <p style={{ ...mono11, color: "var(--ink-soft)", marginTop: 6 }}>
-              Register an OAuth app with {provider} and set{" "}
-              <code>RINGTAIL_OAUTH_{provider.toUpperCase()}_CLIENT_ID</code> (and secret, if the
-              provider requires one) in the daemon's environment, then restart{" "}
-              <code>ringtail up</code>.
-            </p>
-          )}
-        </>
-      ) : (
-        <>
-          <Button variant="primary" disabled={!live || busy} onClick={() => void connect()}>
-            {busy ? "starting…" : waiting ? "waiting for authorization…" : "Connect with OAuth"}
-          </Button>
-          {waiting && (
-            <span style={{ ...mono11, color: "var(--ink-soft)", marginLeft: 10 }}>
-              approve in the tab that opened — this updates when the grant lands
-            </span>
-          )}
-        </>
-      )}
+    <div>
+      <Button variant="primary" disabled={!live || busy} onClick={() => void connect()}>
+        {busy
+          ? "starting…"
+          : waiting
+            ? "waiting for authorization…"
+            : `Connect ${label} with OAuth`}
+      </Button>
+      <div style={{ ...mono11, color: "var(--ink-soft)", marginTop: 6 }}>
+        {waiting
+          ? "approve in the tab that opened — this updates when the grant lands"
+          : "one click · never a key"}
+      </div>
       {err && <p style={{ ...mono11, color: "var(--amber-deep)" }}>{err}</p>}
     </div>
   );
 }
 
-// ── (b) paste a named root ──────────────────────────────────────────────────────
-function PasteRootMode({
+// ── the ONE primary: paste a key (single row; label/account behind a toggle) ──────
+function PasteRow({
   provider,
+  label,
   live,
   varSeed,
   onStored,
 }: {
   provider: string;
+  label: string;
   live: boolean;
   /** For a CUSTOM vendor: an editable env-var name (seeded, stored as the root label). */
   varSeed?: string;
   onStored: () => void;
 }) {
-  const [label, setLabel] = useState("");
+  const [rootLabel, setRootLabel] = useState("");
   const [account, setAccount] = useState("");
   const [varName, setVarName] = useState(varSeed ?? "");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showLabel, setShowLabel] = useState(false);
 
   // Re-seed the var name when the selected custom vendor changes.
   useEffect(() => setVarName(varSeed ?? ""), [varSeed]);
@@ -299,11 +285,11 @@ function PasteRootMode({
       // The value leaves the browser ONLY here — straight to the daemon vault, never the
       // agent — and we drop it from state right after the POST.
       await submitRoot(provider, value, {
-        label: (varSeed ? varName.trim() : label.trim()) || undefined,
+        label: (varSeed ? varName.trim() || varSeed : rootLabel.trim()) || undefined,
         account: account.trim() || undefined,
       });
       setValue("");
-      setLabel("");
+      setRootLabel("");
       setAccount("");
       onStored();
     } finally {
@@ -312,59 +298,24 @@ function PasteRootMode({
   }
 
   return (
-    <div style={modeBox}>
-      <div style={modeHead}>b · paste a root key</div>
-      {varSeed ? (
-        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1.6fr" }}>
-          <input
-            placeholder="env var name"
-            value={varName}
-            disabled={!live || busy}
-            onChange={(e) => setVarName(e.target.value)}
-            style={inputStyle}
-            aria-label="env var name"
-          />
-          <input
-            type="password"
-            placeholder="paste root key"
-            value={value}
-            disabled={!live || busy}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void submit();
-            }}
-            style={inputStyle}
-          />
-        </div>
-      ) : (
-        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr 1.6fr" }}>
-          <input
-            placeholder="label (optional, e.g. prod)"
-            value={label}
-            disabled={!live || busy}
-            onChange={(e) => setLabel(e.target.value)}
-            style={inputStyle}
-          />
-          <input
-            placeholder="account (optional)"
-            value={account}
-            disabled={!live || busy}
-            onChange={(e) => setAccount(e.target.value)}
-            style={inputStyle}
-          />
-          <input
-            type="password"
-            placeholder="paste root key"
-            value={value}
-            disabled={!live || busy}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void submit();
-            }}
-            style={inputStyle}
-          />
-        </div>
-      )}
+    <div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="password"
+          placeholder={`paste your ${label} API key`}
+          value={value}
+          disabled={!live || busy}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+          }}
+          style={{ ...inputStyle, flex: 1 }}
+          aria-label={`paste your ${label} API key`}
+        />
+        <Button variant="primary" disabled={!live || !value || busy} onClick={() => void submit()}>
+          {busy ? "storing…" : "Store"}
+        </Button>
+      </div>
       <div
         style={{
           display: "flex",
@@ -374,19 +325,60 @@ function PasteRootMode({
           marginTop: 8,
         }}
       >
-        <span style={{ ...mono11, color: "var(--green)" }}>🔒 goes to Ringtail, not the agent</span>
-        <Button variant="primary" disabled={!live || !value || busy} onClick={() => void submit()}>
-          {busy ? "storing…" : "store root key"}
-        </Button>
+        <span style={{ ...mono11, color: "var(--green)" }}>
+          🔒 goes to Ringtail, never the agent
+        </span>
+        <button
+          type="button"
+          onClick={() => setShowLabel((v) => !v)}
+          style={{
+            ...mono11,
+            color: "var(--ink-soft)",
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+          }}
+        >
+          {showLabel ? "hide label" : "add a label"}
+        </button>
       </div>
+      {showLabel && (
+        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr", marginTop: 8 }}>
+          {varSeed ? (
+            <input
+              placeholder="env var name"
+              value={varName}
+              disabled={!live || busy}
+              onChange={(e) => setVarName(e.target.value)}
+              style={inputStyle}
+              aria-label="env var name"
+            />
+          ) : (
+            <input
+              placeholder="label (e.g. prod)"
+              value={rootLabel}
+              disabled={!live || busy}
+              onChange={(e) => setRootLabel(e.target.value)}
+              style={inputStyle}
+              aria-label="root label"
+            />
+          )}
+          <input
+            placeholder="account (optional)"
+            value={account}
+            disabled={!live || busy}
+            onChange={(e) => setAccount(e.target.value)}
+            style={inputStyle}
+            aria-label="account"
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-// ── (c) agent-guided signup ───────────────────────────────────────────────────
-// Real BUTTONS (not descriptive text): open the provider's signup / manage-keys page in a
-// new tab, and hand a connected agent a ready copy-able prompt. For a CUSTOM vendor with no
-// catalogue entry, a best-effort web search stands in for the deep links.
+// ── the collapsed agent-guided signup (buttons + a copy-able agent prompt) ────────
 function AgentGuided({
   vendor,
   connector,
@@ -413,12 +405,7 @@ function AgentGuided({
   }
 
   return (
-    <div style={modeBox}>
-      <div style={modeHead}>c · let the agent guide you</div>
-      <p style={{ ...mono11, color: "var(--ink-soft)", margin: "0 0 8px" }}>
-        Don't have an account yet? Open the signup, and hand your agent the prompt below — it walks
-        you to the key, you paste it. No key ever passes through the agent.
-      </p>
+    <div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Button
           variant="primary"
@@ -445,27 +432,12 @@ function AgentGuided({
   );
 }
 
-const helpText: CSSProperties = {
-  fontFamily: font.ui,
-  fontSize: 13,
-  lineHeight: 1.5,
-  margin: "6px 0 12px",
-  color: "var(--ink-soft)",
-};
 const mono11: CSSProperties = { fontFamily: font.mono, fontSize: 11 };
-const modeBox: CSSProperties = {
+const pickedCard: CSSProperties = {
+  marginTop: 14,
   border: "1px solid var(--line)",
-  borderRadius: radius.sm,
-  padding: "10px 12px",
-  marginTop: 10,
-};
-const modeHead: CSSProperties = {
-  fontFamily: font.mono,
-  fontSize: 10,
-  letterSpacing: "0.08em",
-  textTransform: "uppercase",
-  color: "var(--ink-soft)",
-  marginBottom: 8,
+  borderRadius: radius.md,
+  padding: "12px 14px",
 };
 const inputStyle: CSSProperties = {
   width: "100%",
