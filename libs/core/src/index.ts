@@ -13,6 +13,8 @@ import {
 } from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
+// The value-free root registry view (PRD §4.4) — rides the mint choice + the intake list.
+export type { RootInfo } from "@ringtail/store";
 
 // The generative-UI contract (Wizard/Step/Action + the env axis) — the surface
 // the daemon validates and the dashboard renders. Re-exported through the public door.
@@ -23,6 +25,13 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
+// Credential ROTATION (PRD Phase 2) — the mint-new → reconfigure → revoke-old state machine.
+export * from "./rotate";
+// The guided least-privilege DISCOVERY registry (PRD §4.5) — value-free resource +
+// permission enumeration specs, one row per provider.
+export * from "./discovery";
+// The OAuth "Connect a provider" registry + loopback PKCE flow (PRD §4.9).
+export * from "./oauth";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
 export { startMockProvider, type MockProvider } from "./mock-provider";
 

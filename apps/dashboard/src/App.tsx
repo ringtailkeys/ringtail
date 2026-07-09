@@ -19,9 +19,9 @@ import {
 import { Fragment, useEffect, useState } from "react";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { ChooseProject } from "./cockpit/ChooseProject";
+import { ConnectPanel } from "./cockpit/ConnectPanel";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { PendingMints } from "./cockpit/PendingMints";
-import { RootIntake } from "./cockpit/RootIntake";
 import { WizardModal } from "./cockpit/WizardModal";
 import {
   approveAction,
@@ -263,13 +263,14 @@ function Cockpit({
           />
         </Reveal>
       )}
-      {live && <RootIntake live={live} />}
+      {live && <ConnectPanel live={live} />}
       {/* Screen ③ — the parked-mint approve card. Renders only when the agent has
-          authored a root-spending mint awaiting the human's nonce-gated Approve. This
-          is the P0 fix: without it every real mint stalled at needs-confirm forever. */}
+          authored a root-spending mint awaiting the human's nonce-gated Approve. A GUIDED
+          mint (PRD §4.5) carries `choices` → the card renders a least-privilege selection
+          UI whose {resource, permission, expiry, rootId} rides back with the nonce. */}
       <PendingMints
         pending={snapshot.pendingMints}
-        onApprove={live ? (nonce) => void approveMint(nonce) : undefined}
+        onApprove={live ? (nonce, selection) => void approveMint(nonce, selection) : undefined}
       />
       <LiveGrid grid={snapshot.grid} />
       <div

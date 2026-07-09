@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { MintChoices } from "./discovery";
 import type { CredentialStatus } from "./index";
 
 /**
@@ -150,6 +151,22 @@ export interface PendingMint {
   danger?: Danger;
   /** The env-var the mint would file (a NAME, never a value) — shown on the approve card. */
   varName?: string;
+  /**
+   * GUIDED least-privilege mint (PRD §4.5): the value-free menu the human steers with — the
+   * discovered resources (NAMES/ids), the least-privilege permission options + the suggested
+   * (narrowest) default, and whether expiry applies. Present only when the agent flagged the
+   * mint `discover`; the dashboard renders it, the human's {resource, permission, expiry}
+   * selection rides back with the nonce on POST /api/action. Carries no secret value.
+   */
+  choices?: MintChoices;
+  /**
+   * ROTATION (PRD Phase 2): true when this parked approval is a credential ROTATION (mint a
+   * fresh scoped key → switch the sink → revoke the old key) rather than a plain mint. The
+   * ONE human approval of the parked nonce authorizes the whole atomic rotate (mint + revoke
+   * are both consequential, but the human's "yes, rotate" covers both). Value-free label so
+   * the dashboard card reads "Rotate <var>" instead of "Mint <var>".
+   */
+  rotate?: boolean;
 }
 
 /**
