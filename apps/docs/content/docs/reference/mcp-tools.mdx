@@ -51,6 +51,21 @@ value** — that is enforced by `check:no-leak`.
   human confirms out-of-band. Returns `{ providerAccount, varName?, status, reason? }` — **never a
   value** (root or minted; any reflected secret is scrubbed from `reason`). The root key itself is
   pasted by the user via `POST /api/root`, never through the agent.
+- **`provisionProject(mints, vars?, env?)`** — **the batch orchestrator** (the repetition-killer).
+  *A new project provisions itself.* The agent authors **one batch** of mint/wire actions — one per
+  var that self-provisions from a connected root (each a normal [`mintKey`](#complete--execute)
+  template: a `{{ROOT}}` mint with `extract`, or a wire action like GoDaddy set-nameservers with no
+  `extract`) — plus the project's full `vars` list (defaults to the active grid). The daemon parks
+  the **whole batch under a single unforgeable nonce** ("provision these N keys for &lt;project&gt;?")
+  and classifies the vars **not** in the batch with the value-free planner into four buckets:
+  **`mint-from-root`** (a connected root + a recipe exist), **`needs-root`** (a recipe but no root —
+  connect it once, then it self-provisions), **`guided-paste`** (no recipe — paste it by hand), and
+  **`skip`** (a non-secret provisioned *resource* like `DATABASE_URL` — needs a resource, not a key;
+  flagged, never faked). It returns `needs-confirm` + the value-free plan + the parked list — **never
+  a value**. On the human's **one** approval (`POST /api/action` with the nonce) every action runs
+  through the **same** mint gate; each var reports its own value-free result (`minted` / `ok` /
+  `no-root` / `failed`). Partial success is fine. The agent can never self-approve (it never receives
+  the nonce), and a structurally-doomed action rejects the whole batch up front.
 - **`rotateKey(rotate, env?)`** — **rotate a credential** (mint a fresh scoped key → switch the
   sink to it → revoke the old key) as **one human-approved, atomic operation with safe rollback**.
   The agent authors `{ varName, mint, revoke }`: `mint` is a normal scoped/guided

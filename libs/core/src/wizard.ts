@@ -167,6 +167,15 @@ export interface PendingMint {
    * the dashboard card reads "Rotate <var>" instead of "Mint <var>".
    */
   rotate?: boolean;
+  /**
+   * BATCH PROVISION (the North Star): true when this parked approval covers a WHOLE-project batch
+   * (N mint/wire actions under ONE nonce — "provision these N keys for <project>?") rather than a
+   * single mint. The one approval runs the whole batch (proposeProvision/approveProvision); the
+   * daemon routes a batch nonce to `approveProvision`. `count` is how many actions it covers — a
+   * value-free label so the card reads "Provision N keys" instead of "Mint <var>".
+   */
+  batch?: boolean;
+  count?: number;
 }
 
 /**

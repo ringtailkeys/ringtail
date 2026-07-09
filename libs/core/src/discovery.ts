@@ -110,6 +110,23 @@ export const DISCOVERY_SPECS: Record<string, DiscoverySpec> = {
     permissions: ["Zone:DNS:Edit", "Zone:Read"],
     supportsExpiry: true,
   },
+  godaddy: {
+    // GoDaddy: GET /v1/domains returns a BARE array of { domain, domainId, status } (no envelope),
+    // so `listPath: ""` means "the body IS the array" (runDiscovery special-cases it). The `domain`
+    // NAME is the id the set-nameservers PUT targets (`/v1/domains/{domain}`), so idField = domain.
+    // TODO(verify): confirm the exact 2026 `GET /v1/domains` response shape + field names.
+    url: "https://api.godaddy.com/v1/domains",
+    // GoDaddy auth is `sso-key {API_KEY}:{API_SECRET}` — the connected root is the COMBINED
+    // `KEY:SECRET` string; {{ROOT}} substitutes it whole. TODO(verify): the exact combined format.
+    headers: { Authorization: "sso-key {{ROOT}}" },
+    listPath: "",
+    idField: "domain",
+    nameField: "domain",
+    // GoDaddy API keys are NOT least-privilege-scopable per resource like a Resend/CF token — the
+    // domain-level action (set-nameservers) is the unit, so the "permission" menu is nominal.
+    permissions: ["nameserver-update"],
+    supportsExpiry: false,
+  },
 };
 
 /**

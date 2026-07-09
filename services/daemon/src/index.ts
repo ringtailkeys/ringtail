@@ -4,10 +4,12 @@ import { basename, join } from "node:path";
 import { getEnv } from "@ringtail/config";
 import {
   approveMintAction,
+  approveProvision,
   connectionMap,
   defaultEnvironment,
   gridFromExample,
   gridSeed,
+  isBatchNonce,
   provisionCredential,
   reuseKnownCredentials,
 } from "@ringtail/core";
@@ -380,6 +382,8 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       confirmed?: boolean;
       nonce?: string;
       selection?: { resource: string; permission: string; expiry?: string; rootId?: string };
+      /** BATCH PROVISION: optional multi-root picks (varName → root id) for the parked batch. */
+      rootSelections?: Record<string, string>;
     };
     // Approve a parked consequential mint by its server nonce — the UNFORGEABLE human
     // channel. The agent never received this nonce (it went to the dashboard over SSE),
@@ -388,6 +392,21 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     // alongside the nonce; approveMintAction validates it against the discovered options and
     // scopes the mint to exactly that pick (least-privilege), never a blanket permission.
     if (body.nonce) {
+      // BATCH PROVISION (the North Star): a batch nonce covers N mint/wire actions under ONE
+      // approval — route it to approveProvision, which runs each through the same mint gate and
+      // returns a value-free result per action. The dashboard clears the card + flips each minted
+      // cell. Partial success is fine (some minted, some no-root).
+      if (isBatchNonce(body.nonce)) {
+        const out = await approveProvision(body.nonce, body.rootSelections);
+        if ("rejected" in out) return c.json({ status: "rejected", reason: out.rejected });
+        store.clearPendingMint(body.nonce);
+        for (const r of out.results) {
+          if (r.status === "minted" || r.status === "partial") {
+            store.markMinted(r.providerAccount, "local");
+          }
+        }
+        return c.json({ results: out.results });
+      }
       const result = await approveMintAction(body.nonce, body.selection);
       if (result.status !== "rejected") store.clearPendingMint(body.nonce);
       // P1: the human approved a real mint → flip its grid cell to validated so the mint

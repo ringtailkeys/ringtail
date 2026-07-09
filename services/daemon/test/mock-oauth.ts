@@ -44,6 +44,8 @@ export interface MockOAuth {
   mintedIds: string[];
   /** Provider key ids that DELETE /keys/:id revoked — the rotation e2e's revoke assertion. */
   revokedIds: string[];
+  /** Each `PUT /domains/:domain` set-nameservers call — the batch/GoDaddy wire-action assertion. */
+  nsSeen: Array<{ domain: string; nameServers: string[] }>;
   stop: () => void;
 }
 
@@ -54,6 +56,7 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
   const mintSeen: Array<Record<string, unknown>> = [];
   const mintedIds: string[] = [];
   const revokedIds: string[] = [];
+  const nsSeen: Array<{ domain: string; nameServers: string[] }> = [];
   let keyCounter = 0;
   // code → the PKCE challenge presented at /authorize, verified at /token.
   const challenges = new Map<string, string>();
@@ -142,6 +145,21 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
         return json({ api_key: MOCK_MINTED_KEY, id });
       }
 
+      // Set a domain's nameservers: `PUT /domains/:domain` — the value-free wire action the batch
+      // orchestrator runs (mirrors GoDaddy's set-nameservers). Records the domain + NS value-free.
+      if (url.pathname.startsWith("/domains/") && req.method === "PUT") {
+        if (!validBearer(auth)) return json({ error: "unauthorized" }, 401);
+        const domain = decodeURIComponent(url.pathname.slice("/domains/".length));
+        let nameServers: string[] = [];
+        try {
+          nameServers = ((await req.json()) as { nameServers?: string[] }).nameServers ?? [];
+        } catch {
+          /* empty body — record none */
+        }
+        nsSeen.push({ domain, nameServers });
+        return json({ ok: true, domain, nameServers });
+      }
+
       // Revoke a key by id: `DELETE /keys/:id`. `?fail=1` forces a provider error (the rotation
       // rollback e2e drives revoke-fails-→-partial through this). Value-free: ids only.
       if (url.pathname.startsWith("/keys/") && req.method === "DELETE") {
@@ -169,6 +187,7 @@ export function startMockOAuth(extraBearers: string[] = []): MockOAuth {
     mintSeen,
     mintedIds,
     revokedIds,
+    nsSeen,
     stop: () => server.stop(true),
   };
 }
