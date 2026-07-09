@@ -19,6 +19,7 @@ import {
 import { Fragment, useEffect, useState } from "react";
 import { AgentPicker } from "./cockpit/AgentPicker";
 import { ChooseProject } from "./cockpit/ChooseProject";
+import { ConnectCommand } from "./cockpit/ConnectCommand";
 import { ConnectPanel } from "./cockpit/ConnectPanel";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { PendingMints } from "./cockpit/PendingMints";
@@ -263,7 +264,14 @@ function Cockpit({
           />
         </Reveal>
       )}
-      {live && <ConnectPanel live={live} />}
+      {/* Persistent "your agent" panel — the connect command is always one copy away in
+          the cockpit, so a stranger never needs the README to (re)connect their agent. */}
+      {live && (
+        <Reveal delay={30}>
+          <ConnectCommand agentName={snapshot.agent?.name} compact={Boolean(snapshot.agent)} />
+        </Reveal>
+      )}
+      {live && <ConnectPanel live={live} agentName={snapshot.agent?.name} />}
       {/* Screen ③ — the parked-mint approve card. Renders only when the agent has
           authored a root-spending mint awaiting the human's nonce-gated Approve. A GUIDED
           mint (PRD §4.5) carries `choices` → the card renders a least-privilege selection

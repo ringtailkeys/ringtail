@@ -111,7 +111,9 @@ export async function approveMint(nonce: string, selection?: MintSelection): Pro
 // ── OAuth "Connect a provider" (PRD §4.9) — the dashboard drives the loopback flow ──
 
 /** The value-free connect surface: providers already connected (NAMES + scopes + expiry,
- * never a token) + the connector catalogue (signup / api-keys URLs + needs-creds flags). */
+ * never a token) + the connector catalogue (signup / api-keys URLs + needs-creds flags) +
+ * `roots` — the named-root registry (ids/labels/accounts only) so the panel can confirm
+ * "you already hold a root for this provider" at a glance. */
 export interface ConnectStatus {
   connected: Array<{ provider: string; scopes: string[]; expiresAt?: number; obtainedAt: number }>;
   connectors: Array<{
@@ -122,6 +124,7 @@ export interface ConnectStatus {
     signupUrl?: string;
     apiKeysUrl?: string;
   }>;
+  roots?: RootInfo[];
 }
 
 /** GET the connect status (connected providers + the connector catalogue). Empty on down. */
@@ -135,6 +138,47 @@ export async function fetchConnectStatus(): Promise<ConnectStatus> {
   } catch {
     return { connected: [], connectors: [] };
   }
+}
+
+// ── the connect-agent command (the "hidden `claude mcp add`" fix) ────────────────
+// The SPA knows its own origin + can fetch the loopback session token, so it can render
+// the EXACT command a stranger runs to connect their agent — no README, no hidden knowledge.
+// ponytail: mirrors services/daemon/agents.ts command templates for the two agents the
+// task names (same static-mirror pattern as vendors.ts mirrors the recipes registry). Add
+// a row here when the daemon grows another agent template.
+
+/** THIS daemon's origin — same-origin when it served the page, else the injected daemon URL. */
+export function daemonOrigin(): string {
+  return DAEMON_URL || (typeof window !== "undefined" ? window.location.origin : "");
+}
+
+export interface AgentAddCommand {
+  id: string;
+  name: string;
+  command: string;
+}
+
+/** The copy-paste MCP-connect command per agent, pre-filled with origin + session token. */
+export function agentAddCommands(origin: string, token: string): AgentAddCommand[] {
+  const url = `${origin}/mcp`;
+  return [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: `claude mcp add ringtail --transport http ${url} --header "Authorization: Bearer ${token}"`,
+    },
+    {
+      id: "codex",
+      name: "Codex CLI",
+      command: `# add to ~/.codex/config.toml\n[mcp_servers.ringtail]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }`,
+    },
+  ];
+}
+
+/** Resolve origin + the loopback session token → the ready-to-render agent commands. */
+export async function fetchAgentCommands(): Promise<AgentAddCommand[]> {
+  const token = await ensureToken();
+  return agentAddCommands(daemonOrigin(), token);
 }
 
 /** Start the OAuth flow: POST the provider → daemon builds the loopback authorize URL

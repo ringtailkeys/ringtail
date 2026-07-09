@@ -22,7 +22,8 @@ export type VendorCategory =
   | "Payments"
   | "AI"
   | "Databases"
-  | "Storage";
+  | "Storage"
+  | "Other";
 
 export interface Vendor {
   /** The canonical lowercase provider id — the ONLY thing the picker emits. */
@@ -34,6 +35,14 @@ export interface Vendor {
   tags: string[];
   /** True when the provider is in OAUTH_PROVIDERS → the "Connect" (OAuth) mode applies. */
   oauth: boolean;
+  /** A SINK (a secrets store Ringtail WRITES minted keys into, e.g. Infisical) — NOT a
+   * key source to mint from. Surfaces a one-line distinction on the connect card. */
+  sink?: boolean;
+  /** A free-typed vendor with no recipe/allowlist entry (the "Dodo" case) — paste + sink
+   * only, NEVER minting. Built on the fly by `customVendor`, never in the static catalogue. */
+  custom?: boolean;
+  /** A sensible default env-var NAME for a custom vendor (editable by the user). */
+  defaultVar?: string;
 }
 
 /** The canonical set — union of RECIPES + OAUTH_PROVIDERS (see file header). */
@@ -80,6 +89,7 @@ export const VENDORS: Vendor[] = [
     category: "Auth",
     tags: ["secrets", "vault"],
     oauth: false,
+    sink: true,
   },
   {
     id: "creem",
@@ -139,4 +149,39 @@ export function groupVendors(
 export function findVendor(id: string): Vendor | null {
   const key = id.trim().toLowerCase();
   return VENDORS.find((v) => v.id === key) ?? null;
+}
+
+/** Slugify a free-typed vendor name → a lowercase, dash-joined id (the "Dodo Payment"
+ * → "dodo-payment" case). Collapses non-alphanumerics; the picker/root path use this. */
+export function slugify(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** A sensible default env-var NAME for a vendor id (e.g. "dodo-payment" → "DODO_PAYMENT_API_KEY"). */
+export function defaultVarName(id: string): string {
+  return `${id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+
+/**
+ * Build a CUSTOM vendor from a free-typed query — the "connect ANY vendor" path (the Dodo
+ * case). No recipe, no OAuth, no minting: paste + sink only. The id is the slug, the label
+ * keeps the user's casing, and `defaultVar` seeds an editable env-var name. Returns null for
+ * an empty/blank query (nothing to make a vendor from).
+ */
+export function customVendor(query: string): Vendor | null {
+  const id = slugify(query);
+  if (!id) return null;
+  return {
+    id,
+    label: query.trim(),
+    category: "Other",
+    tags: [],
+    oauth: false,
+    custom: true,
+    defaultVar: defaultVarName(id),
+  };
 }

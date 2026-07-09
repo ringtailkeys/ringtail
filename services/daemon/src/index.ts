@@ -346,10 +346,12 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
 
   // GET /api/connect/status → connected providers (NAMES + scopes + expiry, never a token)
   // + the connector catalogue (signup / api-keys URLs + needs-creds flags) so the dashboard
-  // and the agent can guide "sign up / manage keys here". Token-gated like every /api route.
+  // and the agent can guide "sign up / manage keys here". Also `roots` — the value-free
+  // named-root registry (ids/labels/accounts, NEVER a value) so the dashboard can answer
+  // "do I have a root key for this provider?" at a glance. Token-gated like every /api route.
   app.get("/api/connect/status", (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
-    return c.json(connectStatus());
+    return c.json({ ...connectStatus(), roots: listRoots() });
   });
 
   // POST /api/chat — the USER → agent direction channel. The user types in the
