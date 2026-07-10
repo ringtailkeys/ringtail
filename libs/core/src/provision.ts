@@ -45,8 +45,9 @@ export function detectProvider(key: string): string | undefined {
  *  - `needs-root`     — a recipe exists but NO root is connected: tell the user to connect it
  *                       once, then it self-provisions on the next run.
  *  - `guided-paste`   — no recipe for this key: the human pastes it by hand (the long tail).
- *  - `skip`           — a non-secret / provisioned RESOURCE var (e.g. `DATABASE_URL` — it needs
- *                       a resource, not a mintable key). Flagged, NEVER faked.
+ *  - `skip`           — a non-secret: either a provisioned RESOURCE var (e.g. `DATABASE_URL` — it
+ *                       needs a resource, not a mintable key) OR a plain CONFIG value (a URL, a
+ *                       public product/tenant/account id, a from-address). Flagged, NEVER faked.
  */
 export type ProvisionAction = "mint-from-root" | "needs-root" | "guided-paste" | "skip";
 
@@ -81,6 +82,29 @@ function isResourceVar(recipe: Recipe, varName: string): boolean {
 }
 
 /**
+ * A CONSERVATIVE non-secret detector — the dogfood (krispyai-cloud) showed obvious config values
+ * (a URL, product ids, from-addresses) mis-classified as mint-from-root / needs-root / guided-paste,
+ * so the human was told to provision things that aren't secrets. These name shapes are non-secrets
+ * by construction:
+ *   - `*_URL` (incl. `NEXT_PUBLIC_*_URL`) — an endpoint, never a mintable key.
+ *   - a PUBLIC identifier — a product / tenant / account / OAuth client id (`*_PRODUCT_ID*`,
+ *     `*_TENANT*`, `*_ACCOUNT_ID`, `*_CLIENT_ID`). Deliberately NOT a blanket `*_ID` (a real key
+ *     var rarely ends in `_ID`, but blanket-skipping every `_ID` risks skipping one).
+ *   - a from-ADDRESS (`*_FROM`, e.g. `EMAIL_FROM` / `LEAD_EMAIL_FROM`) — an email address, not a key.
+ * CONSERVATIVE BIAS: only these clear shapes match. Anything ambiguous returns false and stays
+ * `guided-paste` — skipping a REAL secret (silent breakage) is worse than guided-pasting a config
+ * value (one wasted paste). A recipe-declared RESOURCE var (`DATABASE_URL`) is exempted at the call
+ * site so it keeps its more specific `skip (resource)` reason.
+ */
+function isConfigVar(varName: string): boolean {
+  const up = varName.toUpperCase();
+  if (up.endsWith("_URL")) return true; // NEXT_PUBLIC_*_URL ends in _URL too
+  if (/(_PRODUCT_ID|_TENANT|_ACCOUNT_ID|_CLIENT_ID)/.test(up)) return true;
+  if (up.endsWith("_FROM")) return true; // EMAIL_FROM / LEAD_EMAIL_FROM / *_FROM
+  return false;
+}
+
+/**
  * Classify each needed var → its provision decision (the value-free PLAN). Pure: no I/O, no
  * value — the daemon fetches `roots`/`grants` from the store and hands them in, so this stays
  * unit-testable in isolation. A var already satisfied is NOT special-cased here (the mint path's
@@ -99,6 +123,18 @@ export function planProvision(input: {
   const items = input.vars.map((varName): ProvisionItem => {
     const provider = detectProvider(varName);
     const recipe = provider ? getRecipe(provider) : undefined;
+
+    // Obvious config / non-secret var (URL, product/tenant/account id, from-address) → skip BEFORE
+    // the provider/mint rules, so it's never told to mint/connect-a-root/paste. A recipe-declared
+    // RESOURCE var (DATABASE_URL) is exempted so it keeps its more specific `skip (resource)` reason.
+    if (isConfigVar(varName) && !(recipe && isResourceVar(recipe, varName))) {
+      return {
+        varName,
+        provider: provider ?? "",
+        action: "skip",
+        reason: `${varName} is a config value (URL / public id / address) — not a provisionable secret`,
+      };
+    }
 
     // No recipe → the long tail: a human pastes this key by hand.
     if (!provider || !recipe) {
