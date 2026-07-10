@@ -12,8 +12,17 @@ import {
   resolveRoot,
   resolveRootById,
 } from "@ringtail/store";
+import { getEnv } from "@ringtail/config";
+import { getRecipe } from "@ringtail/recipes";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
+import {
+  browserRecipeFor,
+  connectEnvoyage,
+  driveBrowserMint,
+  type EnvoyageClient,
+  type HandoffState,
+} from "./envoyage";
 import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
 import { resolveGrantToken } from "./oauth";
 import { planProvision, type ProvisionItem } from "./provision";
@@ -102,6 +111,9 @@ export interface MintResult {
     | "rejected"
     | "needs-confirm"
     | "no-root"
+    // BROWSER MINT: the value minted but validate-after-mint found it under-scoped — filed
+    // NOTHING, same as an API mint's wrong-scope. Drives the wrong-scope grid status.
+    | "wrong-scope"
     | "failed"
     // ROTATION (PRD Phase 2): the new key is live + working, but the OLD key could NOT be
     // revoked — the human must revoke it manually (see `reason`). NOT a broken project.
@@ -412,15 +424,31 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
   // Capture the provider key id (value-free) when the agent gave an `idPath`, so a later
   // rotation can revoke exactly this key. Absent idPath / missing field → no keyId (fine).
   const keyId = action.extract.idPath ? extractKeyId(bodyJson, action.extract.idPath) : undefined;
+  await fileMinted(varName, minted, opts, providerAccount, keyId);
+  return { providerAccount, varName, status: "minted" };
+}
+
+/**
+ * Close the loop: file a freshly-minted VALUE into the sink (.env.local / Infisical) AND the
+ * vault, stamped with the audit name as provenance. The ONE place a minted value lands — shared
+ * by the HTTP mint executor (executeMintAction) AND the browser mint executor (executeBrowserMint)
+ * so THE GUARANTEE + the naming are a single source of truth. Value-free by construction (writes
+ * only; returns nothing).
+ */
+async function fileMinted(
+  varName: string,
+  minted: string,
+  opts: MintOpts,
+  providerAccount: string,
+  keyId?: string,
+): Promise<void> {
   await syncCredential(varName, minted, { env: opts.env, envLocalPath: opts.envLocalPath });
-  // Persist to the vault with the audit name as provenance (find + revoke later).
   putCredential(varName, {
     value: minted,
     provider: auditName(opts.repoName, opts.env, providerAccount),
     updatedAt: new Date().toISOString(),
     ...(keyId ? { keyId } : {}),
   });
-  return { providerAccount, varName, status: "minted" };
 }
 
 /**
@@ -1022,6 +1050,7 @@ export async function proposeProvision(
     vars: input.vars.filter((v) => !mintedVars.has(v)),
     roots: listRoots(),
     grants: listConnectedProviders(),
+    browserMode: getEnv().RINGTAIL_BROWSER_MODE,
     ...(input.project ? { project: input.project } : {}),
   });
   const parked = input.mints.map((m) => ({
@@ -1131,4 +1160,164 @@ export async function approveProvision(
 /** Is `nonce` a parked BATCH (vs a single parked mint)? Lets the daemon route the approve. */
 export function isBatchNonce(nonce: string): boolean {
   return pendingBatches.has(nonce);
+}
+
+// ── BROWSER MINT (Envoyage): the no-mint-API path — drive the provider's web console ─────────
+//
+// The LAST resort in the planner: reached ONLY when a var has no API recipe but a browser recipe
+// can drive its dashboard (provision.ts classifies it `mint-via-browser`). It does NOT author an
+// HTTP action and spends NO {{ROOT}} — it drives a browser session that returns a raw minted
+// value, then closes the loop through the SAME `fileMinted` (validate + sink) an API mint uses.
+// A browser mint CREATES a real credential and needs a human at the live console, so it is ALWAYS
+// consequential: parked under an unforgeable nonce, never auto-run. `ponytail: a dedicated
+// pendingBrowserMints Map beside pendingMints/pendingBatches — a browser mint is provider+var, not
+// an HTTP MintAction, so a separate map is cleaner than a fake action. Same fail-safe (a restart
+// drops pending approvals; the agent re-proposes).`
+
+const pendingBrowserMints = new Map<
+  string,
+  { provider: string; varName: string; opts: MintOpts }
+>();
+
+/** Is `nonce` a parked BROWSER mint? Lets the daemon route the approve to approveMintViaBrowser. */
+export function isBrowserNonce(nonce: string): boolean {
+  return pendingBrowserMints.has(nonce);
+}
+
+/** Injectable deps for a browser mint — the mock swaps `connect` for a scripted MockEnvoyage (NO
+ * real browser); `onState` narrates the handoff to the cockpit. Real runs default to
+ * connectEnvoyage (spawns local Chromium in OSS / the hosted CF engine in cloud). */
+export interface BrowserMintDeps {
+  connect?: () => Promise<EnvoyageClient>;
+  onState?: (s: HandoffState, ctx?: { reason?: string }) => void;
+}
+
+/**
+ * PROPOSE a browser mint (the MCP `mintViaBrowser` entry). ALWAYS consequential — parked under a
+ * fresh unforgeable nonce and returned as `needs-confirm`; the agent never receives the nonce, so
+ * it can't self-approve. Rejects value-free when no browser recipe drives this var (the classifier
+ * already gated this; this is the structural floor). NOTHING executes here.
+ */
+export async function proposeMintViaBrowser(
+  provider: string,
+  varName: string,
+  opts: MintOpts,
+): Promise<ProposeResult> {
+  const recipe = browserRecipeFor(varName);
+  if (!recipe || recipe.provider !== provider) {
+    return {
+      result: {
+        providerAccount: provider,
+        status: "rejected",
+        reason: `no browser recipe drives ${varName}`,
+      },
+    };
+  }
+  const id = randomBytes(6).toString("hex");
+  const nonce = randomBytes(24).toString("hex");
+  pendingBrowserMints.set(nonce, { provider, varName, opts });
+  const pending: PendingMint = {
+    id,
+    nonce,
+    providerAccount: provider,
+    method: "BROWSER",
+    danger: "confirm",
+    varName,
+    browser: true,
+  };
+  return {
+    pending,
+    result: {
+      providerAccount: provider,
+      status: "needs-confirm",
+      id,
+      reason:
+        "human approval required (browser mint) — approve, then solve any login in the live view",
+    },
+  };
+}
+
+/**
+ * The HUMAN approves a parked browser mint by its server nonce (dashboard-only, unforgeable). On
+ * a hit the daemon runs the whole browser mint LOCALLY. An unknown/already-used nonce is rejected.
+ */
+export async function approveMintViaBrowser(
+  nonce: string,
+  deps: BrowserMintDeps = {},
+): Promise<MintResult> {
+  const parked = nonce ? pendingBrowserMints.get(nonce) : undefined;
+  if (!parked) {
+    return { providerAccount: "", status: "rejected", reason: "unknown or already-used approval" };
+  }
+  pendingBrowserMints.delete(nonce);
+  return executeBrowserMint(parked.provider, parked.varName, parked.opts, deps);
+}
+
+/**
+ * Run one browser mint end-to-end — the SIBLING of sendWithRoot for the no-mint-API path. Drives
+ * the provider's web console (Envoyage over HTTP-streaming MCP), gating on the handoff state
+ * machine so the human types any password/OTP in the LIVE VIEW (the agent is structurally blind),
+ * captures the minted value DAEMON-LOCAL, VALIDATES scopes when a recipe offers a probe, then
+ * closes the loop through the SAME `fileMinted` (sink + vault) an API mint uses. Reuses gate 3
+ * (idempotency) too — a var already on disk is reused, no browser spun up. NEVER returns a value.
+ */
+export async function executeBrowserMint(
+  provider: string,
+  varName: string,
+  opts: MintOpts,
+  deps: BrowserMintDeps = {},
+): Promise<MintResult> {
+  const recipe = browserRecipeFor(varName);
+  if (!recipe || recipe.provider !== provider) {
+    return {
+      providerAccount: provider,
+      status: "rejected",
+      reason: `no browser recipe drives ${varName}`,
+    };
+  }
+  // 3. idempotency — a key already provisioned FOR THIS PROJECT is reused, not re-minted (mirrors
+  //    executeMintAction) — no browser session spun up for a var already on disk.
+  if (readProjectEnvLocal(varName, opts.envLocalPath)) {
+    return {
+      providerAccount: provider,
+      varName,
+      status: "reused",
+      reason: `${varName} already provisioned (.env.local) — reused, not re-minted`,
+    };
+  }
+  const connect = deps.connect ?? connectEnvoyage;
+  let client: EnvoyageClient;
+  try {
+    client = await connect();
+  } catch (err) {
+    return {
+      providerAccount: provider,
+      status: "failed",
+      reason: `could not start the browser: ${(err as Error).message}`,
+    };
+  }
+  try {
+    const driven = await driveBrowserMint(client, recipe, deps.onState);
+    if ("error" in driven)
+      return { providerAccount: provider, status: "failed", reason: driven.error };
+    // Validate-after-mint when the provider offers a probe (best-effort: a pure dashboard-only
+    // provider has no recipe → skipped, the loop still closes via the sink). `missing[]` drives the
+    // same wrong-scope status as an API mint.
+    const rec = getRecipe(provider);
+    if (rec?.validate) {
+      const v = await rec.validate({ [varName]: driven.value });
+      if (!v.ok) {
+        return {
+          providerAccount: provider,
+          varName,
+          status: "wrong-scope",
+          reason: v.detail ?? `missing scope(s): ${(v.missing ?? []).join(", ")}`,
+        };
+      }
+    }
+    await fileMinted(varName, driven.value, opts, provider, driven.keyId);
+    return { providerAccount: provider, varName, status: "minted" };
+  } finally {
+    await client.close();
+  }
 }

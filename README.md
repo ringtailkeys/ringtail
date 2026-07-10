@@ -144,7 +144,12 @@ none of them dead-end.
    **Rotate a key** the same way (`rotateKey`): mint a fresh scoped key → switch the sink to it →
    revoke the old one, as one human-approved atomic operation — with safe rollback (mint/sink fail →
    keep the old working key; revoke fail → new key live, "revoke the old one manually"). All of it
-   daemon-local, value-free.
+   daemon-local, value-free. For a **dashboard-only provider with no mint-API**, Ringtail can drive
+   the provider's web console with a real browser (`mintViaBrowser`, Envoyage): it works headless
+   until it hits a genuine human wall (login/CAPTCHA/OTP), then **hands off to you in a live view** —
+   you type the password, the agent stays structurally blind to it — and resumes to mint + file the
+   key through the same validate + sink. Off by default (`RINGTAIL_BROWSER_MODE=off`); flip it to
+   `local` (a local Chromium) or `cloud` (a Cloudflare browser) to enable.
 4. **Recover** — a wrong scope or a failed action is a *first-class state*, not an exception.
    Ringtail explains it in plain language and routes to the fix; the agent re-plans into a
    recovery wizard. Every failure surfaces a cause *and* a next step.

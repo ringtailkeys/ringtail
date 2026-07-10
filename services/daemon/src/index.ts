@@ -4,12 +4,14 @@ import { basename, join } from "node:path";
 import { getEnv } from "@ringtail/config";
 import {
   approveMintAction,
+  approveMintViaBrowser,
   approveProvision,
   connectionMap,
   defaultEnvironment,
   gridFromExample,
   gridSeed,
   isBatchNonce,
+  isBrowserNonce,
   provisionCredential,
   reuseKnownCredentials,
 } from "@ringtail/core";
@@ -406,6 +408,15 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
           }
         }
         return c.json({ results: out.results });
+      }
+      // BROWSER MINT (Envoyage): a browser nonce drives the provider's web console locally (the
+      // daemon lazily spawns Envoyage in `local` mode / connects the hosted engine in `cloud`),
+      // pausing for the human to solve any login in the live view. Same value-free close as a mint.
+      if (isBrowserNonce(body.nonce)) {
+        const result = await approveMintViaBrowser(body.nonce);
+        if (result.status !== "rejected") store.clearPendingMint(body.nonce);
+        if (result.status === "minted") store.markMinted(result.providerAccount, "local");
+        return c.json(result);
       }
       const result = await approveMintAction(body.nonce, body.selection);
       if (result.status !== "rejected") store.clearPendingMint(body.nonce);

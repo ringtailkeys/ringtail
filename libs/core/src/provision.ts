@@ -13,6 +13,7 @@
  */
 import { getRecipe, type Recipe } from "@ringtail/recipes";
 import type { ConnectedProvider, RootInfo } from "@ringtail/store";
+import { browserProviderFor } from "./envoyage";
 
 // Known env-var → provider (recipe id) fallback, so a header-LESS `.env.example` still
 // splits into real provider rows instead of collapsing to one 'other'. Prefix match, first
@@ -45,11 +46,19 @@ export function detectProvider(key: string): string | undefined {
  *  - `needs-root`     — a recipe exists but NO root is connected: tell the user to connect it
  *                       once, then it self-provisions on the next run.
  *  - `guided-paste`   — no recipe for this key: the human pastes it by hand (the long tail).
+ *  - `mint-via-browser` — no mint-API, but a browser recipe can drive this provider's web console
+ *                       (Envoyage): Ringtail mints it by driving the dashboard, the human solves
+ *                       any login wall in the live view. Only when RINGTAIL_BROWSER_MODE ≠ off.
  *  - `skip`           — a non-secret: either a provisioned RESOURCE var (e.g. `DATABASE_URL` — it
  *                       needs a resource, not a mintable key) OR a plain CONFIG value (a URL, a
  *                       public product/tenant/account id, a from-address). Flagged, NEVER faked.
  */
-export type ProvisionAction = "mint-from-root" | "needs-root" | "guided-paste" | "skip";
+export type ProvisionAction =
+  | "mint-from-root"
+  | "needs-root"
+  | "guided-paste"
+  | "mint-via-browser"
+  | "skip";
 
 /** One value-free line of the plan: a var + its provider + the decision + why. NEVER a value. */
 export interface ProvisionItem {
@@ -117,9 +126,14 @@ export function planProvision(input: {
   roots: RootInfo[];
   /** The connected OAuth grants (store.listConnectedProviders()) — names + scopes, no token. */
   grants?: ConnectedProvider[];
+  /** Browser-mint mode (getEnv().RINGTAIL_BROWSER_MODE), handed in so the planner stays PURE. Off
+   * (default) → a no-recipe var stays guided-paste; local/cloud → a var a browser recipe can drive
+   * is upgraded to mint-via-browser. */
+  browserMode?: "off" | "local" | "cloud";
   project?: string;
 }): ProvisionPlan {
   const grants = input.grants ?? [];
+  const browserMode = input.browserMode ?? "off";
   const items = input.vars.map((varName): ProvisionItem => {
     const provider = detectProvider(varName);
     const recipe = provider ? getRecipe(provider) : undefined;
@@ -136,8 +150,18 @@ export function planProvision(input: {
       };
     }
 
-    // No recipe → the long tail: a human pastes this key by hand.
+    // No recipe → the long tail. If a browser recipe can drive this provider's console AND
+    // browser-mint is on, upgrade the hand-paste to a driven mint-via-browser; else paste by hand.
     if (!provider || !recipe) {
+      const browserProvider = browserMode !== "off" ? browserProviderFor(varName) : undefined;
+      if (browserProvider) {
+        return {
+          varName,
+          provider: browserProvider,
+          action: "mint-via-browser",
+          reason: `no mint-API — Ringtail drives ${browserProvider}'s console (you solve any login in the live view)`,
+        };
+      }
       return {
         varName,
         provider: provider ?? "",

@@ -176,6 +176,14 @@ export interface PendingMint {
    */
   batch?: boolean;
   count?: number;
+  /**
+   * BROWSER MINT (Envoyage): true when this parked approval is a browser-driven mint of a
+   * dashboard-only provider (no mint-API). The one approval lets the daemon drive the provider's
+   * web console; the human solves any login/CAPTCHA/OTP in the live view. Value-free label so the
+   * card reads "Mint <var> in the browser". The daemon routes a browser nonce to
+   * `approveMintViaBrowser`.
+   */
+  browser?: boolean;
 }
 
 /**

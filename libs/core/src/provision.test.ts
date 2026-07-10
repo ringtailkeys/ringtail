@@ -124,3 +124,40 @@ test("GoDaddy discover: the domain-list spec has the right shape (bare-array res
   expect(spec!.idField).toBe("domain");
   expect(spec!.nameField).toBe("domain");
 });
+
+// ── BROWSER MINT classification (Envoyage) — the mint-via-browser upgrade of guided-paste ─────
+
+test("mint-via-browser: a no-recipe var a browser recipe can drive is upgraded ONLY when browser-mode is on", () => {
+  // OPENAI_API_KEY has no @ringtail recipe (detectProvider → undefined) but browserRecipes drives
+  // openai. Off (default) → it stays guided-paste; local/cloud → mint-via-browser.
+  const off = planProvision({ vars: ["OPENAI_API_KEY"], roots: [] });
+  expect(off.items[0]?.action).toBe("guided-paste");
+
+  const local = planProvision({ vars: ["OPENAI_API_KEY"], roots: [], browserMode: "local" });
+  expect(local.items[0]?.action).toBe("mint-via-browser");
+  expect(local.items[0]?.provider).toBe("openai");
+  expect(local.items[0]?.reason).toContain("console");
+
+  const cloud = planProvision({ vars: ["OPENAI_API_KEY"], roots: [], browserMode: "cloud" });
+  expect(cloud.items[0]?.action).toBe("mint-via-browser");
+});
+
+test("mint-via-browser fires ONLY for a var a browser recipe drives; a true unknown stays guided-paste", () => {
+  const plan = planProvision({
+    vars: ["OPENAI_API_KEY", "SOME_RANDOM_TOKEN"],
+    roots: [],
+    browserMode: "local",
+  });
+  const by = Object.fromEntries(plan.items.map((i) => [i.varName, i.action]));
+  expect(by["OPENAI_API_KEY"]).toBe("mint-via-browser"); // browser recipe exists
+  expect(by["SOME_RANDOM_TOKEN"]).toBe("guided-paste"); // no browser recipe → hand-paste
+});
+
+test("browser-mode does NOT touch a var that already has an API recipe (mint-from-root wins)", () => {
+  const plan = planProvision({
+    vars: ["RESEND_API_KEY"],
+    roots: [root("resend", "r1")],
+    browserMode: "local",
+  });
+  expect(plan.items[0]?.action).toBe("mint-from-root"); // API recipe beats the browser fallback
+});

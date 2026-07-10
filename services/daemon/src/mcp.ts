@@ -13,6 +13,7 @@ import {
   type MintAction,
   MintActionSchema,
   proposeMintAction,
+  proposeMintViaBrowser,
   proposeProvision,
   proposeRotateAction,
   type RotateAction,
@@ -370,6 +371,40 @@ export function buildMcpServer(
     async ({ rotate, env }) => {
       const project = store.snapshot().project;
       const { result, pending } = await proposeRotateAction(rotate, {
+        ...engineOpts,
+        ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+        env: env ?? "local",
+      });
+      if (pending) store.addPendingMint(pending);
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // mintViaBrowser(provider, varName, env?) → BROWSER MINT (Envoyage), the no-mint-API path. For a
+  // DASHBOARD-ONLY provider (no management API to mint a token), the daemon drives the provider's
+  // web console with a real browser to create + read back the key. It drives HEADLESS and STOPS at
+  // any genuine human wall (login / CAPTCHA / OTP): the human solves it in the LIVE VIEW — the
+  // agent is STRUCTURALLY blind to the password (Envoyage blanks the screenshot on a password
+  // page). A browser mint creates a real credential, so it is consequential: it comes back
+  // needs-confirm and is parked under an unforgeable nonce — the agent cannot self-approve. On the
+  // human's approval the daemon drives the mint locally and closes the loop through the SAME
+  // validate + sink as an API mint. The minted value never leaves the daemon; only the var NAME +
+  // status come back. OFF unless RINGTAIL_BROWSER_MODE is local|cloud.
+  tool<{ provider: string; varName: string; env?: GridEnv }>(
+    server,
+    "mintViaBrowser",
+    {
+      description:
+        "Mint a credential for a DASHBOARD-ONLY provider (no mint-API) by driving its web console with a browser (Envoyage). Ringtail drives headless and stops at any human wall (login/CAPTCHA/OTP) — the human solves it in the live view; the agent never sees the password. Consequential: comes back needs-confirm and is parked for a human to approve (the agent cannot self-approve). On approval the daemon drives the mint locally and files the key through the same validate + sink as an API mint. Never returns a secret value.",
+      inputSchema: {
+        provider: z.string().min(1),
+        varName: z.string().min(1),
+        env: GRID_ENV.optional(),
+      },
+    },
+    async ({ provider, varName, env }) => {
+      const project = store.snapshot().project;
+      const { result, pending } = await proposeMintViaBrowser(provider, varName, {
         ...engineOpts,
         ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
         env: env ?? "local",

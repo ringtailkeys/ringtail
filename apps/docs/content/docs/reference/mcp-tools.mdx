@@ -79,6 +79,19 @@ value** — that is enforced by `check:no-leak`.
   if mint or the sink write fails it **aborts and restores the old working key** (never revoking),
   and if the revoke fails after the sink switched it returns **`partial`** (new key live, "revoke
   the old one manually"). Returns names + status only — **never a value** (old or minted).
+- **`mintViaBrowser(provider, varName, env?)`** — **browser mint** (Envoyage), the *no-mint-API*
+  path. For a **dashboard-only** provider (no management API to mint a token), the daemon drives the
+  provider's **web console with a real browser** to create + read back the key. It drives **headless
+  until it can't**, then STOPS at any genuine human wall — **login / CAPTCHA / OTP**: the human
+  solves it in the **live view**, and the agent is **structurally blind** to the password (Envoyage
+  blanks the screenshot on a password page, so the model gets text only). A browser mint creates a
+  real credential, so it is consequential: it comes back `needs-confirm` and is **parked under an
+  unforgeable nonce** — the agent can never self-approve. On the human's approval (`POST /api/action`
+  with the nonce) the daemon drives the mint **locally** through the **detect → pause → wait-for-human
+  → resume** handoff state machine, captures the value daemon-side, and closes the loop through the
+  **same validate + sink** as an API mint. Returns the var **name** + status only — **never a value**.
+  OFF unless `RINGTAIL_BROWSER_MODE` is `local` (local Chromium, OSS) or `cloud` (a Cloudflare browser
+  via cdp-url, paid). The planner surfaces the matching var as the **`mint-via-browser`** bucket.
 
 ## Connect providers
 

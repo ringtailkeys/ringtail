@@ -25,6 +25,19 @@ export const EnvSchema = z.object({
   INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),
   INFISICAL_PROJECT_ID: z.string().min(1).optional(),
   INFISICAL_ENVIRONMENT: z.enum(["dev", "staging", "prod"]).default("dev"),
+  // BROWSER-MINT (Envoyage). When a provider has NO mint-API (a dashboard-only key), Ringtail
+  // drives its web console with a browser to produce the value. OFF by default: it needs a local
+  // Chromium + the Envoyage binary present, so a fresh `ringtail up` must never fail on a missing
+  // browser. `local` = local Envoyage driving a local Chromium (OSS, pure-local, no cloud); `cloud`
+  // = a hosted Envoyage driving a Cloudflare browser via cdp-url (paid tier).
+  RINGTAIL_BROWSER_MODE: z.enum(["off", "local", "cloud"]).default("off"),
+  // The Envoyage HTTP-streaming MCP endpoint (…/mcp). Loopback for `local` (when unset the daemon
+  // spawns Envoyage and fills it in), the hosted engine for `cloud`.
+  RINGTAIL_ENVOYAGE_URL: z.string().url().optional(),
+  // `cloud` only: the Cloudflare browser CDP `wss` the hosted Envoyage drives (`--cdp-url`).
+  RINGTAIL_BROWSER_CDP_URL: z.string().optional(),
+  // Bearer for a non-loopback Envoyage (cloud). Loopback `local` needs none.
+  RINGTAIL_ENVOYAGE_TOKEN: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
