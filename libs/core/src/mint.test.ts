@@ -140,6 +140,30 @@ test("idempotent: a second identical mint REUSES the existing key (no second HTT
   expect(mock.calls.oauthToken).toEqual([]);
 });
 
+test("idempotency reads the PROJECT's .env.local, not process.env (BUG: shell-leaked var must MINT)", async () => {
+  // A var contaminating the CALLING SHELL's env (leaked from another project) but ABSENT from THIS
+  // project's .env.local must be treated as MISSING → minted here, not falsely "reused" with
+  // nothing landing. `PROJECT_ONLY_KEY` is not in the temp .env.local.
+  process.env.PROJECT_ONLY_KEY = "leaked-from-another-project-shell";
+  const action: MintAction = {
+    providerAccount: "mock",
+    method: "POST",
+    url: `${mock.url}/oauth/token`,
+    headers: { Authorization: "Bearer {{ROOT}}" },
+    body: { grant: "full" },
+    extract: { varName: "PROJECT_ONLY_KEY", path: "token" },
+  };
+  const minted = await executeMintAction(action, opts);
+  expect(minted.status).toBe("minted"); // NOT "reused" — process.env is ignored for idempotency
+  expect(readFileSync(envLocalPath, "utf8")).toContain("PROJECT_ONLY_KEY=mock-token-full");
+  expect(JSON.stringify(minted)).not.toContain("leaked-from-another-project-shell");
+
+  // Now that it IS in the project's .env.local, a second run reuses it.
+  const reused = await executeMintAction(action, opts);
+  expect(reused.status).toBe("reused");
+  delete process.env.PROJECT_ONLY_KEY;
+});
+
 test("header injection: a CRLF-in-header action is REJECTED and the root never leaks in the reason", async () => {
   const action: MintAction = {
     providerAccount: "mock", // root IS stored (beforeAll)

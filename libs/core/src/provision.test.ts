@@ -44,6 +44,48 @@ test("planner classifies each var into the right bucket", () => {
   expect(by["SOME_RANDOM_TOKEN"]).toBe("guided-paste");
 });
 
+test("config / non-secret vars classify as skip (BUG: krispyai-cloud dogfood), real keys don't", () => {
+  // The exact krispyai-cloud-shaped mix that mis-classified: a URL, product ids, from-addresses,
+  // plus the correctly-classified keys that MUST stay intact + an ambiguous var that must NOT skip.
+  const plan = planProvision({
+    vars: [
+      "BETTER_AUTH_URL", //          was mint-from-root — a URL → skip (config)
+      "CREEM_PRODUCT_ID_MONTHLY", // was needs-root — a product id → skip (config)
+      "CREEM_PRODUCT_ID_ANNUAL", //  was needs-root — a product id → skip (config)
+      "EMAIL_FROM", //               was guided-paste — an address → skip (config)
+      "LEAD_EMAIL_FROM", //          was guided-paste — an address → skip (config)
+      "NEXT_PUBLIC_APP_URL", //      a public URL → skip (config)
+      "RESEND_API_KEY", //           a real mintable key → mint-from-root (root connected)
+      "BETTER_AUTH_SECRET", //       generate recipe → mint-from-root (local)
+      "POSTHOG_API_KEY", //          a real key, no root → needs-root
+      "DATABASE_URL", //             a URL BUT a Neon resource → skip (resource, not config)
+      "MYSTERY_TOKEN", //            ambiguous → stays guided-paste (never wrongly skipped)
+    ],
+    roots: [root("resend", "r1")],
+  });
+  const by = Object.fromEntries(plan.items.map((i) => [i.varName, i.action]));
+  const reason = Object.fromEntries(plan.items.map((i) => [i.varName, i.reason]));
+
+  expect(by["BETTER_AUTH_URL"]).toBe("skip");
+  expect(by["CREEM_PRODUCT_ID_MONTHLY"]).toBe("skip");
+  expect(by["CREEM_PRODUCT_ID_ANNUAL"]).toBe("skip");
+  expect(by["EMAIL_FROM"]).toBe("skip");
+  expect(by["LEAD_EMAIL_FROM"]).toBe("skip");
+  expect(by["NEXT_PUBLIC_APP_URL"]).toBe("skip");
+
+  // The correct existing classifications MUST still hold.
+  expect(by["RESEND_API_KEY"]).toBe("mint-from-root");
+  expect(by["BETTER_AUTH_SECRET"]).toBe("mint-from-root");
+  expect(by["POSTHOG_API_KEY"]).toBe("needs-root");
+  expect(by["DATABASE_URL"]).toBe("skip");
+  // DATABASE_URL keeps its more specific RESOURCE reason, not the generic config one.
+  expect(reason["DATABASE_URL"]).toContain("resource");
+  expect(reason["BETTER_AUTH_URL"]).toContain("config value");
+
+  // Conservative bias: an ambiguous unknown var is NOT skipped (skipping a real secret is worse).
+  expect(by["MYSTERY_TOKEN"]).toBe("guided-paste");
+});
+
 test("mint-from-root names the single connected root's id (the one the batch spends)", () => {
   const plan = planProvision({ vars: ["RESEND_API_KEY"], roots: [root("resend", "r1")] });
   expect(plan.items[0]?.action).toBe("mint-from-root");

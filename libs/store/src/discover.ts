@@ -42,6 +42,24 @@ function parseEnvFile(text: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Read ONE var from the PROJECT's own `.env.local` ONLY (no other source). This is the
+ * idempotency question — "did WE already provision this var FOR THIS PROJECT?" — and it must
+ * NOT consult `process.env` (or the global vault / ~/.aws / gh / wrangler). The dogfood showed a
+ * `RESEND_API_KEY` leaked into the calling shell's env from another project made the mint path
+ * answer "already provisioned — reused" and land NOTHING in the target project. A var present only
+ * in the shell but absent from THIS project's `.env.local` MUST count as MISSING → gets minted.
+ * Returns the trimmed value found, or undefined. Never throws (missing file → undefined).
+ */
+export function readProjectEnvLocal(
+  varName: string,
+  envLocalPath = join(process.cwd(), ".env.local"),
+): string | undefined {
+  if (!existsSync(envLocalPath)) return undefined;
+  const v = parseEnvFile(readFileSync(envLocalPath, "utf8"))[varName];
+  return v && v.trim() ? v : undefined;
+}
+
 /** ~/.aws/credentials [default] → AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY. */
 function scanAws(): Record<string, string> {
   const p = join(homedir(), ".aws", "credentials");

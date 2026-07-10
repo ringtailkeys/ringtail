@@ -17,7 +17,7 @@ import { join } from "node:path";
  * computed per-call (not module constants) so the override applies at call time.
  */
 // Local credential discovery — scan KNOWN stores, map to manifest vars, reuse.
-export { discoverCredentials, type DiscoveredCred } from "./discover";
+export { discoverCredentials, readProjectEnvLocal, type DiscoveredCred } from "./discover";
 
 export interface Credential {
   value: string;

@@ -7,6 +7,7 @@ import {
   listRoots,
   listRootsFor,
   putCredential,
+  readProjectEnvLocal,
   readStore,
   resolveRoot,
   resolveRootById,
@@ -363,17 +364,18 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     };
   }
 
-  // 3. idempotency — reuse an already-provisioned key instead of duplicating it.
+  // 3. idempotency — reuse a key already provisioned FOR THIS PROJECT. Checks the target
+  //    project's OWN `.env.local` ONLY — never process.env / the global vault. A var that exists
+  //    only in the calling shell (e.g. a RESEND_API_KEY leaked from another project) is MISSING
+  //    here and gets minted, instead of being falsely reported "reused" with nothing landing.
   if (action.extract) {
-    const [hit] = discoverCredentials([action.extract.varName], {
-      envLocalPath: opts.envLocalPath,
-    });
-    if (hit) {
+    const existing = readProjectEnvLocal(action.extract.varName, opts.envLocalPath);
+    if (existing) {
       return {
         providerAccount,
         varName: action.extract.varName,
         status: "reused",
-        reason: `${action.extract.varName} already provisioned (${hit.source}) — reused, not re-minted`,
+        reason: `${action.extract.varName} already provisioned (.env.local) — reused, not re-minted`,
       };
     }
   }
