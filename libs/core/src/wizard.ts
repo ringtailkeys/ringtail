@@ -208,19 +208,24 @@ export interface AuthState {
 
 /**
  * A live browser-mint session the human can watch + take over (Increment 2). VALUE-FREE:
- * a session id, the provider being minted, the live-view WS URL, the handoff state, and
- * Envoyage's canned handoff reason. NO frame bytes, NO minted value ever ride here — the
- * frames stream over the WS (out-of-band), and the secret the human types goes straight
- * into the real page (captured daemon-side). This just tells the cockpit "a browser mint
- * is live, here's where to watch it and whether it needs you".
+ * a session id, the provider being minted, the handoff state, Envoyage's canned handoff
+ * reason, and the LATEST screencast frame + cursor (the SDK's per-session SSE events, piped
+ * through the daemon onto THIS snapshot — no separate WS transport). The frame is a masked
+ * page image, never a secret: the password the human types goes straight into the real page
+ * (captured daemon-side, and the engine blanks the frame while a wall is up). Bounded — only
+ * the newest frame/cursor is kept, replaced as they arrive over `/events`.
  */
 export interface BrowserSession {
   /** Opaque id (the parked browser nonce) — lets the card key/dedupe a session. */
   id: string;
   /** The provider being minted (a NAME — e.g. "openai"). */
   provider: string;
-  /** The Envoyage live-view WebSocket URL (`--ws-port`). Loopback in `local` mode. */
-  wsUrl: string;
+  /** The latest screencast frame off the engine's SSE live-view (base64 PNG + monotonic seq),
+   * piped through the daemon onto this snapshot. Absent until the first frame lands / when
+   * frames aren't flowing. Value-free — a masked page image, blanked while a wall is up. */
+  frame?: { pngBase64: string; seq: number };
+  /** The latest agent-cursor position in PAGE CSS pixels — the cockpit glides Rocco here. */
+  cursor?: { x: number; y: number };
   /** Where the handoff stands: DRIVING → HUMAN_NEEDED → PAUSED → RESUMED. */
   state: HandoffState;
   /** Envoyage's canned handoff reason when state is HUMAN_NEEDED/PAUSED (e.g. "password"). */
@@ -250,7 +255,8 @@ export interface DaemonSnapshot {
   /** Consequential mints the agent proposed, awaiting a human approve (unforgeable nonce). */
   pendingMints: PendingMint[];
   /** A live browser-mint the human can watch + take over (Increment 2). Null when none is
-   * running. Value-free (id + provider + WS URL + handoff state); frames stream over the WS. */
+   * running. Value-free (id + provider + handoff state + latest masked frame/cursor); the
+   * frame/cursor ride THIS snapshot over `/events`, no separate WS. */
   browserSession?: BrowserSession | null;
   /** Account/entitlement — drives the sign-in gate + freemium enforcement. */
   auth: AuthState;

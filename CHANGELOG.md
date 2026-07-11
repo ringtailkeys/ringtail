@@ -23,9 +23,17 @@ onboarding) until the first tagged version.
   a local `envoyage serve`; `cloud` points at the hosted Envoyage endpoint
   (`RINGTAIL_ENVOYAGE_URL` + `RINGTAIL_ENVOYAGE_TOKEN`). The password-blind boundary and human-needed
   detection now live in the engine — the SDK's `human-needed` masking is authoritative.
+- **Cockpit live-view now flows over the daemon's existing `/events` SSE channel.** The browser
+  mint's frames/cursor/narration come from the consumed `@envoyage/browser` SDK session's
+  `frame`/`cursor` events, piped through the daemon onto the same token-gated snapshot the dashboard
+  already reads — no separate live-view transport. The `BrowserHandoff` card paints the real masked
+  page image + Rocco cursor when a live engine is running, falling back to the recorded mock otherwise.
 
 ### Removed
 
+- **The dead live-view WebSocket path** (`envoyageWsUrl()` + the `RINGTAIL_ENVOYAGE_WS_PORT` env var
+  + the `wsUrl` field on the browser-mint session). Frames now ride the `/events` SSE snapshot; there
+  is no `--ws-port` stream to point at.
 - **The direct CF-CDP cloud browser path** (`libs/core/src/cloud-browser.ts`) and its ported
   `HUMAN_NEEDED_JS` in-page probe. `cloud` no longer drives a Cloudflare browser over CDP directly —
   it consumes the hosted Envoyage engine like `local` does.

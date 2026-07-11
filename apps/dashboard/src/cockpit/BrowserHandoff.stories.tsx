@@ -28,7 +28,6 @@ type Story = StoryObj<typeof meta>;
 const base = (over: Partial<BrowserSession>): BrowserSession => ({
   id: "sess1",
   provider: "openai",
-  wsUrl: "ws://127.0.0.1:8800",
   state: "DRIVING",
   bubbles: [{ text: "opening platform.openai.com…" }],
   ...over,

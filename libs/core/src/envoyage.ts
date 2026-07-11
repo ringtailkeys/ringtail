@@ -47,6 +47,16 @@ export interface BrowserMinter {
   close(): Promise<void>;
 }
 
+/**
+ * The live-view sinks the daemon passes so the SDK session's `frame`/`cursor` SSE events land on the
+ * cockpit snapshot (pushed out over the daemon's existing `/events` channel). Value-free: a masked
+ * page image + a cursor position, never a secret. Latest-only — the daemon keeps just the newest.
+ */
+export interface LiveViewSinks {
+  onFrame?: (frame: { pngBase64: string; seq: number }) => void;
+  onCursor?: (cursor: { x: number; y: number }) => void;
+}
+
 /** Walk a dot-path into a parsed JSON value; undefined if any hop is missing. */
 function pluck(obj: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
@@ -76,10 +86,20 @@ const SETTLE_MS = 200;
  * bypass this adapter entirely (they inject a fake BrowserMinter), and the engine — not us — gates
  * what ever leaves.
  */
-function sessionMinter(session: BrowserSession, teardown: () => Promise<void>): BrowserMinter {
+function sessionMinter(
+  session: BrowserSession,
+  teardown: () => Promise<void>,
+  sinks: LiveViewSinks = {},
+): BrowserMinter {
   let paused = false;
   let pendingHuman: { reason: string; instructions?: string } | undefined;
   let ping: (() => void) | undefined;
+  // Live-view: pipe the engine's screencast frame/cursor SSE events straight to the daemon sinks
+  // (which push them onto the cockpit snapshot over `/events`). Subscribing here starts the SDK's
+  // SSE stream; the state/human-needed handoff below reuses that same one connection.
+  if (sinks.onFrame)
+    session.on("frame", (f) => sinks.onFrame?.({ pngBase64: f.pngBase64, seq: f.seq }));
+  if (sinks.onCursor) session.on("cursor", (c) => sinks.onCursor?.({ x: c.x, y: c.y }));
   session.on("human-needed", (h) => {
     pendingHuman = {
       reason: h.reason,
@@ -182,7 +202,10 @@ function sessionMinter(session: BrowserSession, teardown: () => Promise<void>): 
  *   • `off`          — throws the "browser-mint is off" guard (a fresh install has no browser).
  * Both live modes pass the `ENGINE_OWNED_BROWSER` sentinel → the engine owns the browser.
  */
-export async function connectBrowserMinter(env: Env = getEnv()): Promise<BrowserMinter> {
+export async function connectBrowserMinter(
+  env: Env = getEnv(),
+  sinks: LiveViewSinks = {},
+): Promise<BrowserMinter> {
   if (env.RINGTAIL_BROWSER_MODE === "off") {
     throw new Error("browser-mint is off — set RINGTAIL_BROWSER_MODE=local|cloud to enable it");
   }
@@ -198,7 +221,7 @@ export async function connectBrowserMinter(env: Env = getEnv()): Promise<Browser
       cdpUrl: ENGINE_OWNED_BROWSER,
       ...(token ? { token } : {}),
     });
-    return sessionMinter(session, () => session.close());
+    return sessionMinter(session, () => session.close(), sinks);
   }
   // local: an explicit URL points at an already-running engine; no URL → spawn one via the SDK.
   if (env.RINGTAIL_ENVOYAGE_URL) {
@@ -207,13 +230,13 @@ export async function connectBrowserMinter(env: Env = getEnv()): Promise<Browser
       cdpUrl: ENGINE_OWNED_BROWSER,
       ...(token ? { token } : {}),
     });
-    return sessionMinter(session, () => session.close());
+    return sessionMinter(session, () => session.close(), sinks);
   }
   const local = await launch({
     ...(process.env.RINGTAIL_ENVOYAGE_BIN ? { bin: process.env.RINGTAIL_ENVOYAGE_BIN } : {}),
     ...(token ? { token } : {}),
   });
-  return sessionMinter(local.session, () => local.stop());
+  return sessionMinter(local.session, () => local.stop(), sinks);
 }
 
 // ── the browser-recipe registry + the handoff state machine ──────────────────────────────────
@@ -298,13 +321,6 @@ export function stepLabel(step: BrowserStep): string {
     default:
       return `${step.tool}…`;
   }
-}
-
-/** The local Envoyage live-view WebSocket URL (`--ws-port`, loopback) — where the cockpit connects
- * to paint frames (Increment 2). Mirrors the port default `resolveEndpoint` spawns Envoyage with. */
-export function envoyageWsUrl(): string {
-  const wsPort = process.env.RINGTAIL_ENVOYAGE_WS_PORT ?? "8800";
-  return `ws://127.0.0.1:${wsPort}`;
 }
 
 /** The browser recipe that drives `varName`, or undefined. Names only. */
