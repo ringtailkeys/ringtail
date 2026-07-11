@@ -5,10 +5,12 @@ import {
   type Action,
   type ActiveProject,
   type AuthState,
+  type BrowserSession,
   type ChatChoice,
   type ChatMessage,
   type CredentialStatus,
   type DaemonSnapshot,
+  type HandoffState,
   type GridEnv,
   type GridRow,
   type PendingMint,
@@ -49,6 +51,11 @@ export class DaemonStore {
    * server nonce so the dashboard can POST it back to /api/action — value-free (NAMES
    * + method + nonce, never a root/minted value). Cleared once approved. */
   #pendingMints: PendingMint[] = [];
+  /** A live browser-mint the human can watch + take over (Increment 2). Value-free:
+   * id + provider + live-view WS URL + handoff state. Null when no browser mint runs.
+   * Set when a browser mint starts, mutated as the handoff state machine advances, cleared
+   * when it finishes — the cockpit's BrowserHandoff card rides this off the SSE snapshot. */
+  #browserSession: BrowserSession | null = null;
   /** Account/entitlement state (control-plane). Drives the sign-in gate + freemium
    * enforcement. Value-free: email + tier + a server-side count, never a session token. */
   #auth: AuthState = { signedIn: false };
@@ -68,9 +75,27 @@ export class DaemonStore {
       agent: this.#agent,
       project: this.#project,
       pendingMints: this.#pendingMints,
+      browserSession: this.#browserSession,
       auth: this.#auth,
       edition: this.#edition,
     };
+  }
+
+  // ── browser mint live-view session (Increment 2) ────────────────────────────
+
+  /** Start (or replace) the live browser-mint session — the daemon calls this when a
+   * browser mint begins so the cockpit opens the live-view card. Value-free by shape. */
+  setBrowserSession(session: BrowserSession | null): void {
+    this.#browserSession = session;
+    this.#emit();
+  }
+
+  /** Advance the running session's handoff state (DRIVING → HUMAN_NEEDED → PAUSED →
+   * RESUMED) as `driveBrowserMint`'s `onState` fires. No-op if no session is live. */
+  setBrowserState(state: HandoffState, reason?: string): void {
+    if (!this.#browserSession) return;
+    this.#browserSession = { ...this.#browserSession, state, ...(reason ? { reason } : {}) };
+    this.#emit();
   }
 
   /** Replace the account/entitlement state (after sign-in, sign-out, or an entitlement

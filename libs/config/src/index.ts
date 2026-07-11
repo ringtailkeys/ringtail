@@ -25,19 +25,23 @@ export const EnvSchema = z.object({
   INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),
   INFISICAL_PROJECT_ID: z.string().min(1).optional(),
   INFISICAL_ENVIRONMENT: z.enum(["dev", "staging", "prod"]).default("dev"),
-  // BROWSER-MINT (Envoyage). When a provider has NO mint-API (a dashboard-only key), Ringtail
-  // drives its web console with a browser to produce the value. OFF by default: it needs a local
-  // Chromium + the Envoyage binary present, so a fresh `ringtail up` must never fail on a missing
-  // browser. `local` = local Envoyage driving a local Chromium (OSS, pure-local, no cloud); `cloud`
-  // = a hosted Envoyage driving a Cloudflare browser via cdp-url (paid tier).
+  // BROWSER-MINT. When a provider has NO mint-API (a dashboard-only key), Ringtail drives its web
+  // console with a browser to produce the value. OFF by default: it needs a browser backend present,
+  // so a fresh `ringtail up` must never fail on a missing browser. TWO backends behind one
+  // `BrowserMinter` door: `local` = local Envoyage driving a local Chromium (OSS, pure-local, no
+  // cloud); `cloud` = Ringtail drives a Cloudflare browser over CDP DIRECTLY (paid tier) — NO
+  // Envoyage service runs in the cloud path (see libs/core/src/cloud-browser.ts for why).
   RINGTAIL_BROWSER_MODE: z.enum(["off", "local", "cloud"]).default("off"),
-  // The Envoyage HTTP-streaming MCP endpoint (…/mcp). Loopback for `local` (when unset the daemon
-  // spawns Envoyage and fills it in), the hosted engine for `cloud`.
+  // `local` only: the Envoyage HTTP-streaming MCP endpoint (…/mcp). Loopback; when unset the daemon
+  // spawns Envoyage and fills it in.
   RINGTAIL_ENVOYAGE_URL: z.string().url().optional(),
-  // `cloud` only: the Cloudflare browser CDP `wss` the hosted Envoyage drives (`--cdp-url`).
-  RINGTAIL_BROWSER_CDP_URL: z.string().optional(),
-  // Bearer for a non-loopback Envoyage (cloud). Loopback `local` needs none.
+  // Bearer for a non-loopback Envoyage. Loopback `local` needs none.
   RINGTAIL_ENVOYAGE_TOKEN: z.string().min(1).optional(),
+  // `cloud` only: Cloudflare Browser Rendering creds. The cloud backend acquires a live CDP endpoint
+  // against a CF browser with these (see connectCfCdp). Optional — absent → the cloud path throws a
+  // clear "needs CF creds" error; the mockable core + local Envoyage need neither.
+  CF_ACCOUNT_ID: z.string().min(1).optional(),
+  CF_API_TOKEN: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

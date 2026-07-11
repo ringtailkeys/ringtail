@@ -18,9 +18,9 @@ import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
 import {
   browserRecipeFor,
-  connectEnvoyage,
+  connectBrowserMinter,
   driveBrowserMint,
-  type EnvoyageClient,
+  type BrowserMinter,
   type HandoffState,
 } from "./envoyage";
 import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
@@ -1186,9 +1186,9 @@ export function isBrowserNonce(nonce: string): boolean {
 
 /** Injectable deps for a browser mint — the mock swaps `connect` for a scripted MockEnvoyage (NO
  * real browser); `onState` narrates the handoff to the cockpit. Real runs default to
- * connectEnvoyage (spawns local Chromium in OSS / the hosted CF engine in cloud). */
+ * connectBrowserMinter (local Envoyage in OSS / the CF-CDP direct driver in cloud). */
 export interface BrowserMintDeps {
-  connect?: () => Promise<EnvoyageClient>;
+  connect?: () => Promise<BrowserMinter>;
   onState?: (s: HandoffState, ctx?: { reason?: string }) => void;
 }
 
@@ -1285,8 +1285,8 @@ export async function executeBrowserMint(
       reason: `${varName} already provisioned (.env.local) — reused, not re-minted`,
     };
   }
-  const connect = deps.connect ?? connectEnvoyage;
-  let client: EnvoyageClient;
+  const connect = deps.connect ?? connectBrowserMinter;
+  let client: BrowserMinter;
   try {
     client = await connect();
   } catch (err) {

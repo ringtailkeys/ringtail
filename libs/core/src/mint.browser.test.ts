@@ -15,8 +15,8 @@ import {
   type BrowserRecipe,
   browserRecipes,
   driveBrowserMint,
-  type EnvoyageClient,
-  type EnvoyageResult,
+  type BrowserMinter,
+  type BrowserResult,
   type HandoffState,
 } from "./envoyage";
 import {
@@ -30,12 +30,12 @@ import { type MockProvider, startMockProvider } from "./mock-provider";
 const REPO = "acme";
 
 /**
- * The MOCK Envoyage: implements the EnvoyageClient tool surface with scripted responses. `wall:true`
+ * The MOCK Envoyage: implements the BrowserMinter tool surface with scripted responses. `wall:true`
  * simulates "not signed in" — the first browser_open surfaces a password handoff (Envoyage's
  * highest-priority auto-detect), which clears after the human "hits Continue" (2 wait polls). It
  * NEVER produces a password itself — the human types it in the live view; the mock just gates.
  */
-class MockEnvoyage implements EnvoyageClient {
+class MockEnvoyage implements BrowserMinter {
   paused = false;
   closed = false;
   private waits = 0;
@@ -47,7 +47,7 @@ class MockEnvoyage implements EnvoyageClient {
   ) {
     this.authed = !opts.wall;
   }
-  async call(tool: string, args: Record<string, unknown> = {}): Promise<EnvoyageResult> {
+  async call(tool: string, args: Record<string, unknown> = {}): Promise<BrowserResult> {
     this.calls.push({ tool, args });
     if (tool === "browser_wait_for_human") {
       // Anti-sleep-loop: not-resumed for a couple polls (the human is solving it), then resumed.

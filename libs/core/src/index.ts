@@ -26,9 +26,11 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
-// BROWSER MINT (Envoyage) — the no-mint-API path: EnvoyageClient (HTTP-streaming MCP) + the
-// browser-recipe registry + the detect→pause→wait→resume handoff state machine.
+// BROWSER MINT — the no-mint-API path: the backend-agnostic BrowserMinter door + the browser-recipe
+// registry + the detect→pause→wait→resume handoff state machine + `connectBrowserMinter` dispatch.
 export * from "./envoyage";
+// The CLOUD BrowserMinter backend — drives a Cloudflare browser over CDP directly (no Envoyage).
+export * from "./cloud-browser";
 // Credential ROTATION (PRD Phase 2) — the mint-new → reconfigure → revoke-old state machine.
 export * from "./rotate";
 // The guided least-privilege DISCOVERY registry (PRD §4.5) — value-free resource +

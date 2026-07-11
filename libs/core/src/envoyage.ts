@@ -23,7 +23,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
  * blanks the screenshot + sets `paused` on a password/CAPTCHA/OAuth wall — the model gets text
  * only, structurally blind to the secret the human is about to type).
  */
-export interface EnvoyageResult {
+export interface BrowserResult {
   json: Record<string, unknown>;
   /** Envoyage flagged a human wall on this step (password/CAPTCHA/Cloudflare/OAuth, or a
    *  proactive `browser_request_human`). Highest-priority auto-detect is the password field. */
@@ -33,13 +33,20 @@ export interface EnvoyageResult {
 }
 
 /**
- * The subset of Envoyage's 18 `browser_*` tools the mint driver uses, behind ONE `call` door —
- * a thin wrapper over the same StreamableHTTPClientTransport `connectDaemon` speaks. Tests drive
- * a MockEnvoyage that implements this interface (a Map of tool-name → scripted fn), so the loop
- * logic is proven with NO real browser (Envoyage itself is proven live).
+ * The BACKEND-AGNOSTIC browser-mint surface — the subset of Envoyage's 18 `browser_*` tools the
+ * mint driver (`driveBrowserMint`) uses, behind ONE `call` door. TWO backends implement it:
+ *   • LOCAL (OSS)  — `connectEnvoyage` (this file): a thin wrapper over the same
+ *     StreamableHTTPClientTransport `connectDaemon` speaks; Envoyage owns the browser + native
+ *     (Rust) password-blinding.
+ *   • CLOUD (paid) — `connectCloudBrowser` (cloud-browser.ts): drives a Cloudflare browser over
+ *     CDP DIRECTLY, no Envoyage service; the password-blinding boundary is ported into TS there.
+ * `connectBrowserMinter(env)` dispatches by `RINGTAIL_BROWSER_MODE`. Renamed from `EnvoyageClient`
+ * because the cloud backend has no Envoyage — the old name was a lie. Tests drive a mock that
+ * implements this interface (a Map of tool-name → scripted fn), so the loop logic is proven with
+ * NO real browser.
  */
-export interface EnvoyageClient {
-  call(tool: string, args?: Record<string, unknown>): Promise<EnvoyageResult>;
+export interface BrowserMinter {
+  call(tool: string, args?: Record<string, unknown>): Promise<BrowserResult>;
   close(): Promise<void>;
 }
 
@@ -52,8 +59,8 @@ function pluck(obj: unknown, path: string): unknown {
 }
 
 /** Parse an MCP `callTool` result (one text-content JSON block, same shape the daemon emits)
- * into the value-free `EnvoyageResult` the driver reasons over. */
-function parseEnvoyageResult(res: unknown): EnvoyageResult {
+ * into the value-free `BrowserResult` the driver reasons over. */
+function parseBrowserResult(res: unknown): BrowserResult {
   const content = (res as { content?: Array<{ text?: string }> }).content ?? [];
   const text = content.map((c) => c.text ?? "").join("");
   let json: Record<string, unknown>;
@@ -62,7 +69,7 @@ function parseEnvoyageResult(res: unknown): EnvoyageResult {
   } catch {
     json = { text };
   }
-  const human = json.human_request as EnvoyageResult["human"] | undefined;
+  const human = json.human_request as BrowserResult["human"] | undefined;
   return {
     json,
     ...(human ? { human } : {}),
@@ -112,7 +119,7 @@ async function resolveEndpoint(env: Env): Promise<{ url: string; child?: ChildPr
  * Backend (local Chromium vs CF browser) is decided by `getEnv()`, NOT a constructor arg: one
  * door, no DI ceremony. Throws when browser-mode is off (a fresh install has no browser).
  */
-export async function connectEnvoyage(env: Env = getEnv()): Promise<EnvoyageClient> {
+export async function connectEnvoyage(env: Env = getEnv()): Promise<BrowserMinter> {
   if (env.RINGTAIL_BROWSER_MODE === "off") {
     throw new Error("browser-mint is off — set RINGTAIL_BROWSER_MODE=local|cloud to enable it");
   }
@@ -125,12 +132,27 @@ export async function connectEnvoyage(env: Env = getEnv()): Promise<EnvoyageClie
   await client.connect(transport);
   return {
     call: async (tool, args = {}) =>
-      parseEnvoyageResult(await client.callTool({ name: tool, arguments: args })),
+      parseBrowserResult(await client.callTool({ name: tool, arguments: args })),
     close: async () => {
       await client.close();
       child?.kill(); // reap a spawned local Envoyage; a shared hosted engine has no child
     },
   };
+}
+
+/**
+ * Dispatch to the right `BrowserMinter` backend by `RINGTAIL_BROWSER_MODE`: `cloud` → the CF-CDP
+ * direct driver (cloud-browser.ts, NO Envoyage service); `local`/`off` → local Envoyage. This is
+ * `executeBrowserMint`'s default `connect`, so the whole mint chain is backend-agnostic. `off` still
+ * reaches connectEnvoyage, which throws the "browser-mint is off" guard — one place owns that error.
+ * ponytail: import the cloud backend lazily so a pure-local build never loads its CDP code path.
+ */
+export async function connectBrowserMinter(env: Env = getEnv()): Promise<BrowserMinter> {
+  if (env.RINGTAIL_BROWSER_MODE === "cloud") {
+    const { connectCloudBrowser } = await import("./cloud-browser");
+    return connectCloudBrowser(env);
+  }
+  return connectEnvoyage(env);
 }
 
 // ── the browser-recipe registry + the handoff state machine ──────────────────────────────────
@@ -227,7 +249,7 @@ export function isSecretInput(step: BrowserStep): boolean {
  * enforcement that the machine can't act while the human owns the screen. Returns whether resumed.
  */
 async function awaitHuman(
-  client: EnvoyageClient,
+  client: BrowserMinter,
   onState?: (s: HandoffState, ctx?: { reason?: string }) => void,
 ): Promise<boolean> {
   onState?.("PAUSED");
@@ -247,7 +269,7 @@ async function awaitHuman(
  * `browser_wait_for_human` runs — the machine never types the password.
  */
 export async function driveBrowserMint(
-  client: EnvoyageClient,
+  client: BrowserMinter,
   recipe: BrowserRecipe,
   onState?: (s: HandoffState, ctx?: { reason?: string }) => void,
 ): Promise<{ value: string; keyId?: string } | { error: string }> {
