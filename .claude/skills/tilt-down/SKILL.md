@@ -11,7 +11,7 @@ allowed-tools: Bash, Read
 ## Usage
 
 ```bash
-cd ~/Development/ringtail
+cd ~/Development/ringtail-org/ringtail
 ./tilt_down.sh
 ```
 
