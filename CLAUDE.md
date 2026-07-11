@@ -87,3 +87,11 @@ The same "docs in the SAME change" law covers two more surfaces:
 - **bun** only (never npm). `bun install` at root.
 - Dev servers: **`./tilt_up.sh`** — never `tilt up` directly. Served roles get stable
   portless URLs; nothing pins a service port (read `$PORT`).
+
+## CI / Deploy / Release
+
+CI = GitHub Actions (`ci.yml`, never deploys). Release = OIDC Trusted Publishing
+(`publish.yml`, tokenless; Tilt `release` button pushes the tag). The tool is **local** —
+no `deploy.sh`, no CF runtime (that's `../ringtail-site`); no `dev_up.sh` (the umbrella lives
+in the site). Full runbook + one-time founder bootstrap in [`AGENTS.md`](./AGENTS.md) →
+**CI / Deploy / Release** and `packages/cli/PUBLISH.md`.
