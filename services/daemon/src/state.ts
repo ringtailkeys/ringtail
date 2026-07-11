@@ -99,6 +99,24 @@ export class DaemonStore {
     this.#emit();
   }
 
+  /** Push the latest live-view frame onto the running session (the SDK session's `frame` SSE
+   * event, piped through by driveBrowserMint's connect). Latest-only + monotonic: a stale/older
+   * `seq` is dropped so a late frame never flickers the card back. No-op if no session is live. */
+  setBrowserFrame(frame: { pngBase64: string; seq: number }): void {
+    if (!this.#browserSession) return;
+    if (this.#browserSession.frame && frame.seq <= this.#browserSession.frame.seq) return;
+    this.#browserSession = { ...this.#browserSession, frame };
+    this.#emit();
+  }
+
+  /** Push the latest agent-cursor position (PAGE CSS px) onto the running session — the cockpit
+   * glides Rocco here. Latest-only. No-op if no session is live. */
+  setBrowserCursor(cursor: { x: number; y: number }): void {
+    if (!this.#browserSession) return;
+    this.#browserSession = { ...this.#browserSession, cursor };
+    this.#emit();
+  }
+
   /** Append one Rocco-voice narration bubble to the running session (the cockpit's SSE action
    * bubbles). Value-free by shape — `driveBrowserMint`'s `onNarrate` feeds this. No-op if no
    * session is live. */

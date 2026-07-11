@@ -8,7 +8,6 @@ import {
   approveProvision,
   connectionMap,
   defaultEnvironment,
-  envoyageWsUrl,
   gridFromExample,
   gridSeed,
   isBatchNonce,
@@ -414,16 +413,16 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       // daemon lazily spawns Envoyage in `local` mode / connects the hosted engine in `cloud`),
       // pausing for the human to solve any login in the live view. Same value-free close as a mint.
       if (isBrowserNonce(body.nonce)) {
-        // Open the live-view card BEFORE the mint runs so the cockpit can watch (provider + WS URL
-        // come from the parked mint + config). deps wire the handoff state machine → the SSE
-        // snapshot: `onState` advances DRIVING → HUMAN_NEEDED → PAUSED → RESUMED (the "your turn"
-        // moment), `onNarrate` streams the Rocco-voice action bubbles. VALUE-FREE — no frame bytes
-        // or minted value ride here; frames stream out-of-band over the WS.
+        // Open the live-view card BEFORE the mint runs so the cockpit can watch (provider from the
+        // parked mint). deps wire the SDK session's SSE events → the SAME `/events` snapshot:
+        // `onState` advances DRIVING → HUMAN_NEEDED → PAUSED → RESUMED (the "your turn" moment),
+        // `onNarrate` streams the Rocco-voice action bubbles, and `onFrame`/`onCursor` pipe the
+        // engine's masked screencast frame + cursor onto the snapshot (latest-only). VALUE-FREE —
+        // the frame is a masked page image (blanked at a wall), and no minted value ever rides here.
         const parked = store.snapshot().pendingMints.find((p) => p.nonce === body.nonce);
         store.setBrowserSession({
           id: body.nonce,
           provider: parked?.providerAccount ?? "",
-          wsUrl: envoyageWsUrl(),
           state: "DRIVING",
           bubbles: [],
         });
@@ -431,6 +430,8 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
           onState: (s, ctx) => store.setBrowserState(s, ctx?.reason),
           onNarrate: (text, handoff) =>
             store.pushBrowserBubble({ text, ...(handoff ? { handoff } : {}) }),
+          onFrame: (frame) => store.setBrowserFrame(frame),
+          onCursor: (cursor) => store.setBrowserCursor(cursor),
         });
         if (result.status !== "rejected") store.clearPendingMint(body.nonce);
         if (result.status === "minted") store.markMinted(result.providerAccount, "local");

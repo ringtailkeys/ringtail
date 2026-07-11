@@ -16,7 +16,7 @@ import { mapToPageCss } from "./browser-frame";
  * BROWSER HANDOFF — the live-view card for a browser mint (Increment 2). Rocco drives a real
  * provider console to create the key; the human only steps in for the password/CAPTCHA wall. The
  * card rides `snapshot.browserSession` off SSE and gives the founder's five moments:
- *   1. a "Show live browser" toggle (watching is OPT-IN — default OFF, no WS/screencast bandwidth),
+ *   1. a "Show live browser" toggle (watching is OPT-IN — default OFF; frames ride the SSE snapshot),
  *   2. the rendered browser painted on a canvas (mock frames in-sandbox — see note),
  *   3. Rocco AS the cursor, gliding to each action with a press,
  *   4. Rocco-voice SSE action bubbles (visible even with frames off),
@@ -26,15 +26,18 @@ import { mapToPageCss } from "./browser-frame";
  * blanks the screenshot), and the minted value never rides here. The mock frame shows only a MASKED
  * key (`sk-•••`), never a real secret.
  *
- * MOCKED vs LIVE: a real cloud/local frame stream can't run in this sandbox, so the canvas paints a
- * stylized RECORDED frame of the provider page + a scripted Rocco cursor. When a live WS is present
- * (`session.wsUrl`, local Envoyage `--ws-port` / CF-CDP screencast), swap `paintMockFrame` for the
- * decoded WS frame and drive the cursor off `browser_cursor` — the geometry (`mapToPageCss`) is the
- * same either way.
+ * LIVE vs MOCK: when the engine is running, `session.frame`/`session.cursor` arrive on the SSE
+ * snapshot (the daemon pipes the SDK session's `frame`/`cursor` events onto `/events` — no separate
+ * WS transport) and the card paints the real masked page image with Rocco gliding to the real
+ * cursor. Absent a live engine (Storybook, no browser mode), it falls back to a stylized RECORDED
+ * frame + a scripted cursor so the card still tells its story.
  */
 
-// The mock page's own pixel space (what a real frame's natural size would be). Rocco's cursor coords
-// live here; the canvas paints at this resolution and CSS-fits it (page aspect → no letterbox).
+// The engine screencasts at its CDP viewport (CSS px); live cursor coords arrive in this space.
+// Mirrors the reference LiveView. The frame image object-fits the card, so % positioning holds.
+const LIVE_PAGE = { w: 1280, h: 800 };
+// The mock page's own pixel space (what a recorded frame's natural size would be). The scripted
+// cursor lives here; the canvas paints at this resolution and CSS-fits it (page aspect → no letterbox).
 const PAGE = { w: 1000, h: 640 };
 
 const DOMAINS: Record<string, string> = { openai: "platform.openai.com" };
@@ -139,6 +142,8 @@ export function BrowserHandoff({
           domain={domain}
           phase={phase}
           reduce={reduce}
+          frame={session.frame}
+          liveCursor={session.cursor}
           onForwardClick={handoff ? onForwardClick : undefined}
         />
       )}
@@ -345,17 +350,24 @@ function LiveCanvas({
   domain,
   phase,
   reduce,
+  frame,
+  liveCursor,
   onForwardClick,
 }: {
   domain: string;
   phase: Phase;
   reduce: boolean;
+  /** The latest real screencast frame off the SSE snapshot; when present it replaces the mock. */
+  frame?: { pngBase64: string; seq: number };
+  /** The latest real agent-cursor (PAGE CSS px, LIVE_PAGE space) off the SSE snapshot. */
+  liveCursor?: { x: number; y: number };
   onForwardClick?: (page: { x: number; y: number }) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const live = Boolean(frame);
 
-  // Scripted cursor target in PAGE coords, keyed to phase. During a handoff Rocco LEAVES the canvas
-  // (he's "not watching") — he re-appears in the banner instead.
+  // Scripted cursor target in PAGE coords, keyed to phase (mock only). During a handoff Rocco LEAVES
+  // the canvas (he's "not watching") — he re-appears in the banner instead.
   const target = useMemo(() => {
     if (phase === "resumed") return { x: 500, y: 250 };
     return { x: 470, y: 388 }; // the "Create new secret key" button
@@ -372,13 +384,18 @@ function LiveCanvas({
   }, [target, reduce]);
 
   useEffect(() => {
+    if (live) return; // real frame painted via <img>; skip the mock
     const cv = canvasRef.current;
     if (!cv) return;
     const ctx = cv.getContext("2d");
     if (ctx) paintMockFrame(ctx, domain, phase);
-  }, [domain, phase]);
+  }, [domain, phase, live]);
 
-  const showCursor = phase === "driving" || phase === "resumed";
+  // Cursor position in % of the surface: live → the engine cursor (LIVE_PAGE space); mock → scripted.
+  const pos = live
+    ? liveCursor && { x: (liveCursor.x / LIVE_PAGE.w) * 100, y: (liveCursor.y / LIVE_PAGE.h) * 100 }
+    : { x: (cursor.x / PAGE.w) * 100, y: (cursor.y / PAGE.h) * 100 };
+  const showCursor = live ? Boolean(pos) : phase === "driving" || phase === "resumed";
 
   return (
     <div
@@ -394,37 +411,51 @@ function LiveCanvas({
         transition: reduce ? "none" : "box-shadow 300ms",
       }}
     >
-      <canvas
-        ref={canvasRef}
-        width={PAGE.w}
-        height={PAGE.h}
-        onPointerDown={
-          onForwardClick
-            ? (e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                const page = mapToPageCss(
-                  { x: e.clientX - r.left, y: e.clientY - r.top },
-                  { w: r.width, h: r.height },
-                  PAGE,
-                );
-                if (page) onForwardClick(page);
-              }
-            : undefined
-        }
-        style={{
-          display: "block",
-          width: "100%",
-          height: "auto",
-          aspectRatio: `${PAGE.w} / ${PAGE.h}`,
-          cursor: onForwardClick ? "crosshair" : "default",
-        }}
-      />
-      {showCursor && (
+      {live ? (
+        <img
+          src={`data:image/png;base64,${frame?.pngBase64 ?? ""}`}
+          alt="live browser view"
+          draggable={false}
+          style={{
+            display: "block",
+            width: "100%",
+            height: "auto",
+            aspectRatio: `${LIVE_PAGE.w} / ${LIVE_PAGE.h}`,
+          }}
+        />
+      ) : (
+        <canvas
+          ref={canvasRef}
+          width={PAGE.w}
+          height={PAGE.h}
+          onPointerDown={
+            onForwardClick
+              ? (e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  const page = mapToPageCss(
+                    { x: e.clientX - r.left, y: e.clientY - r.top },
+                    { w: r.width, h: r.height },
+                    PAGE,
+                  );
+                  if (page) onForwardClick(page);
+                }
+              : undefined
+          }
+          style={{
+            display: "block",
+            width: "100%",
+            height: "auto",
+            aspectRatio: `${PAGE.w} / ${PAGE.h}`,
+            cursor: onForwardClick ? "crosshair" : "default",
+          }}
+        />
+      )}
+      {showCursor && pos && (
         <div
           style={{
             position: "absolute",
-            left: `${(cursor.x / PAGE.w) * 100}%`,
-            top: `${(cursor.y / PAGE.h) * 100}%`,
+            left: `${pos.x}%`,
+            top: `${pos.y}%`,
             transform: `translate(-14%, -8%) scale(${press ? 0.86 : 1})`,
             transition: reduce
               ? "none"

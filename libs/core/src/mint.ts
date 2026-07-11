@@ -1193,6 +1193,11 @@ export interface BrowserMintDeps {
   /** Rocco-voice narration → the cockpit's SSE action bubbles (Increment 2). `handoff` marks the
    * orange "your turn" bubble. Value-free (see envoyage.ts::stepLabel). */
   onNarrate?: (text: string, handoff?: boolean) => void;
+  /** The engine's live-view frame/cursor → the cockpit snapshot (over `/events`). Value-free: a
+   * masked page image + cursor. Wired to the real SDK session by the default `connect`; the mock
+   * `connect` produces none (the frame path needs a live engine). */
+  onFrame?: (frame: { pngBase64: string; seq: number }) => void;
+  onCursor?: (cursor: { x: number; y: number }) => void;
 }
 
 /**
@@ -1288,7 +1293,11 @@ export async function executeBrowserMint(
       reason: `${varName} already provisioned (.env.local) — reused, not re-minted`,
     };
   }
-  const connect = deps.connect ?? connectBrowserMinter;
+  // The real connect wires the SDK session's frame/cursor SSE events → the daemon snapshot
+  // (deps.onFrame/onCursor). Tests inject `deps.connect` (a scripted minter, no frames).
+  const connect =
+    deps.connect ??
+    (() => connectBrowserMinter(getEnv(), { onFrame: deps.onFrame, onCursor: deps.onCursor }));
   let client: BrowserMinter;
   try {
     client = await connect();
