@@ -1,49 +1,46 @@
 /**
- * ENVOYAGE — browser-mint over HTTP-streaming MCP (the no-mint-API path). When a provider has
- * no management API to mint a token, Ringtail drives its web CONSOLE with a real browser
- * (Envoyage) to produce the credential — the value lands through the SAME validate + sink close
- * an API mint uses (see mint.ts::executeBrowserMint), so THE GUARANTEE (the value never leaves
- * the daemon) holds for free.
+ * ENVOYAGE — browser-mint over the published `@envoyage/browser` SDK (the no-mint-API path). When a
+ * provider has no management API to mint a token, Ringtail drives its web CONSOLE with a real
+ * browser to produce the credential — the value lands through the SAME validate + sink close an API
+ * mint uses (see mint.ts::executeBrowserMint), so THE GUARANTEE (the value never leaves the daemon)
+ * holds for free.
  *
- * Transport is a near-verbatim clone of ai-worker's `connectDaemon`: the SAME
- * StreamableHTTPClientTransport + bearer pattern Ringtail already speaks to its own daemon. The
- * browser BACKEND (local Chromium vs a Cloudflare browser) is NOT a client concern — it's decided
- * by a serve flag on the Envoyage process (`--cdp-url` present or not); the client only knows a
- * URL + bearer. `ponytail: no backend interface with two impls — the difference is a process flag,
- * not a class hierarchy.`
+ * Ringtail CONSUMES a running Envoyage ENGINE (`envoyage serve`) via the SDK's `createSession`: a
+ * fetch+SSE client that POSTs `browser_*` tools and reads the per-session live-view SSE stream. The
+ * ENGINE owns all driving + native human-needed detection + password-blinding — so the
+ * password-blind boundary lives OFF Ringtail and IN the engine (we DELETED the old ported CF-CDP
+ * probe). Both browser modes are the SAME SDK client, differing only by endpoint (deploy model,
+ * `~/Development/envoyage/docs/service-design.md`): `local` (OSS) points at a local `envoyage serve`
+ * (spawned via the SDK's `launch()` when no URL is set); `cloud` (paid) points at the hosted
+ * Envoyage endpoint. Neither passes a real `cdpUrl` — the `"local"` sentinel tells the SDK to send
+ * NO `x-envoyage-cdp-url` header, so the ENGINE owns the browser (local Chromium / hosted CF).
  */
-import { type ChildProcess, spawn } from "node:child_process";
+import { createSession, type BrowserSession } from "@envoyage/browser";
+import { launch } from "@envoyage/browser/launch";
 import { getEnv, type Env } from "@ringtail/config";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 /**
  * The value-free result of one browser tool call, as the DAEMON-LOCAL driver sees it. `json` is
- * the parsed tool payload; `human`/`paused` mirror Envoyage's NATIVE handoff detection (it
- * blanks the screenshot + sets `paused` on a password/CAPTCHA/OAuth wall — the model gets text
- * only, structurally blind to the secret the human is about to type).
+ * the parsed tool payload; `human`/`paused` mirror the ENGINE's native handoff detection (it
+ * blanks the screenshot + pauses on a password/CAPTCHA/OAuth wall — the model gets text only,
+ * structurally blind to the secret the human is about to type). Surfaced from the SDK's
+ * `human-needed`/`state` SSE events (same events LiveView.tsx reads), never a re-run in-page probe.
  */
 export interface BrowserResult {
   json: Record<string, unknown>;
-  /** Envoyage flagged a human wall on this step (password/CAPTCHA/Cloudflare/OAuth, or a
-   *  proactive `browser_request_human`). Highest-priority auto-detect is the password field. */
+  /** The engine flagged a human wall on this step (password/CAPTCHA/Cloudflare/OAuth, or a
+   *  proactive request). Highest-priority auto-detect is the password field. */
   human?: { reason: string; instructions?: string };
-  /** Envoyage's `paused` flag — true from a detected wall until the human hits ▶ Continue. */
+  /** The engine's `paused` flag — true from a detected wall until the human hits ▶ Continue. */
   paused?: boolean;
 }
 
 /**
- * The BACKEND-AGNOSTIC browser-mint surface — the subset of Envoyage's 18 `browser_*` tools the
- * mint driver (`driveBrowserMint`) uses, behind ONE `call` door. TWO backends implement it:
- *   • LOCAL (OSS)  — `connectEnvoyage` (this file): a thin wrapper over the same
- *     StreamableHTTPClientTransport `connectDaemon` speaks; Envoyage owns the browser + native
- *     (Rust) password-blinding.
- *   • CLOUD (paid) — `connectCloudBrowser` (cloud-browser.ts): drives a Cloudflare browser over
- *     CDP DIRECTLY, no Envoyage service; the password-blinding boundary is ported into TS there.
- * `connectBrowserMinter(env)` dispatches by `RINGTAIL_BROWSER_MODE`. Renamed from `EnvoyageClient`
- * because the cloud backend has no Envoyage — the old name was a lie. Tests drive a mock that
- * implements this interface (a Map of tool-name → scripted fn), so the loop logic is proven with
- * NO real browser.
+ * The browser-mint surface — the subset of the engine's `browser_*` tools the mint driver
+ * (`driveBrowserMint`) uses, behind ONE `call` door. ONE backend implements it now:
+ * `connectBrowserMinter` builds it from the SDK's `createSession` for BOTH modes (local + cloud),
+ * differing only by endpoint. Tests drive a mock that implements this interface directly (a Map of
+ * tool-name → scripted fn), so the loop logic is proven with NO real browser and NO SDK.
  */
 export interface BrowserMinter {
   call(tool: string, args?: Record<string, unknown>): Promise<BrowserResult>;
@@ -58,101 +55,165 @@ function pluck(obj: unknown, path: string): unknown {
   }, obj);
 }
 
-/** Parse an MCP `callTool` result (one text-content JSON block, same shape the daemon emits)
- * into the value-free `BrowserResult` the driver reasons over. */
-function parseBrowserResult(res: unknown): BrowserResult {
-  const content = (res as { content?: Array<{ text?: string }> }).content ?? [];
-  const text = content.map((c) => c.text ?? "").join("");
-  let json: Record<string, unknown>;
-  try {
-    json = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    json = { text };
-  }
-  const human = json.human_request as BrowserResult["human"] | undefined;
-  return {
+/** The `cdpUrl` sentinel meaning "engine owns the browser". The SDK sends NO `x-envoyage-cdp-url`
+ * header for `"local"` (see @envoyage/browser createSession), so the engine drives ITS browser —
+ * a local Chromium (OSS) or the hosted CF browser (cloud). BOTH modes pass it; only the endpoint
+ * differs. This is the deploy model's "swap a URL": Ringtail provisions no browser either way. */
+const ENGINE_OWNED_BROWSER = "local";
+
+/** How long a navigating `call` waits for the engine's async `human-needed`/`state` SSE event to
+ * land before returning — the bridge from the SSE stream to the synchronous `BrowserResult` the
+ * driver reads. ponytail: fixed small settle; widen if a slow engine races the tool-return. */
+const SETTLE_MS = 200;
+
+/**
+ * Adapt an SDK `BrowserSession` to the `BrowserMinter` door `driveBrowserMint` drives. The ENGINE
+ * owns detection + password-blinding; we mirror its handoff onto the value-free `BrowserResult` by
+ * tracking the SSE `human-needed`/`state` events (the shape LiveView.tsx reads) — no ported probe.
+ * Recipe addressing is text/label-based, so `browser_click`/`browser_form_input` resolve a ref via
+ * the engine's `find` first. `browser_read_page` reads the fresh key DAEMON-LOCAL. ponytail: a live
+ * provider tunes its recipe `extract` path to the SDK's PageSnapshot shape; the mock-driven tests
+ * bypass this adapter entirely (they inject a fake BrowserMinter), and the engine — not us — gates
+ * what ever leaves.
+ */
+function sessionMinter(session: BrowserSession, teardown: () => Promise<void>): BrowserMinter {
+  let paused = false;
+  let pendingHuman: { reason: string; instructions?: string } | undefined;
+  let ping: (() => void) | undefined;
+  session.on("human-needed", (h) => {
+    pendingHuman = {
+      reason: h.reason,
+      ...(h.instructions ? { instructions: h.instructions } : {}),
+    };
+    paused = true;
+    ping?.();
+  });
+  session.on("state", (s) => {
+    paused = s.paused;
+    if (!s.paused) pendingHuman = undefined;
+    ping?.();
+  });
+  // Wait up to SETTLE_MS for the next handoff/state SSE event (or resolve early when one arrives).
+  const settle = (): Promise<void> =>
+    new Promise((res) => {
+      const t = setTimeout(() => {
+        ping = undefined;
+        res();
+      }, SETTLE_MS);
+      ping = () => {
+        clearTimeout(t);
+        ping = undefined;
+        res();
+      };
+    });
+  const withHandoff = (json: Record<string, unknown>): BrowserResult => ({
     json,
-    ...(human ? { human } : {}),
-    ...(typeof json.paused === "boolean" ? { paused: json.paused } : {}),
+    ...(pendingHuman ? { human: pendingHuman } : {}),
+    ...(paused ? { paused: true } : {}),
+  });
+  // Resolve a text/label to an element ref via the engine's find (recipes address by text).
+  const refFor = async (query: string, explicit: unknown): Promise<string | undefined> => {
+    if (typeof explicit === "string" && explicit) return explicit;
+    if (!query) return undefined;
+    const snap = await session.find(query);
+    return snap.elements[0]?.ref;
+  };
+
+  return {
+    async call(tool, args = {}): Promise<BrowserResult> {
+      switch (tool) {
+        case "browser_open": {
+          const r = await session.open(String(args.url ?? ""));
+          await settle();
+          return withHandoff({ ok: !r.isError, url: args.url });
+        }
+        case "browser_click": {
+          const ref = await refFor(String(args.text ?? ""), args.ref);
+          if (ref) await session.click({ ref });
+          await settle();
+          return withHandoff({ ok: Boolean(ref) });
+        }
+        case "browser_form_input": {
+          // NON-secret fields only — driveBrowserMint's isSecretInput refused any password/OTP
+          // field before this runs (a defensive belt on top of the engine's own blinding).
+          const ref = await refFor(String(args.label ?? ""), args.ref);
+          if (ref) await session.formInput(ref, String(args.value ?? ""));
+          return { json: { ok: Boolean(ref) } };
+        }
+        case "browser_read_page": {
+          // Read the fresh key DAEMON-LOCAL. ponytail: best-effort — a live provider tunes its
+          // recipe extract path to this PageSnapshot; the value never reaches the model regardless.
+          const snap = await session.readPage();
+          const secret = snap.elements.find((e) => e.value)?.value ?? "";
+          return { json: { title: snap.title, url: snap.url, secret, keyId: "" } };
+        }
+        case "browser_wait_for_human": {
+          // Anti-sleep-loop: the engine-side wait returns the instant the human resumes, else times
+          // out and driveBrowserMint re-calls. `paused` (SSE-tracked) is the authoritative signal.
+          const secs = Math.max(1, Math.ceil(Number(args.timeoutMs ?? 500) / 1000));
+          await session.waitForHuman(secs);
+          await settle();
+          return paused
+            ? { json: { resumed: false, timedOut: true }, paused: true }
+            : { json: { resumed: true }, paused: false };
+        }
+        case "browser_screenshot": {
+          // MODEL-SUPPRESSION is the ENGINE's job now (it blanks the shot while a wall is up); we
+          // relay, and keep a defensive belt: no bytes while paused.
+          if (paused) return { json: { png_base64: "" }, paused: true };
+          const r = await session.screenshot();
+          return { json: { png_base64: r.image ?? "" } };
+        }
+        default:
+          return { json: { ok: true } };
+      }
+    },
+    close: teardown,
   };
 }
 
-/** Poll one URL until it answers (any HTTP status) or the cap trips — poll-not-sleep, used to
- * wait for a freshly-spawned Envoyage's /mcp to come up. `ponytail: fixed small cap; widen if a
- * cold Chromium launch is slower than this on the target box.` */
-async function waitForPort(url: string, tries = 60): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    try {
-      await fetch(url, { method: "GET" });
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  }
-  throw new Error(`Envoyage did not come up at ${url}`);
-}
-
-/** Resolve the Envoyage MCP endpoint for this env, spawning a local Envoyage when needed. */
-async function resolveEndpoint(env: Env): Promise<{ url: string; child?: ChildProcess }> {
-  if (env.RINGTAIL_ENVOYAGE_URL) return { url: env.RINGTAIL_ENVOYAGE_URL };
-  if (env.RINGTAIL_BROWSER_MODE === "cloud") {
-    throw new Error("cloud browser-mint needs RINGTAIL_ENVOYAGE_URL (the hosted engine's /mcp)");
-  }
-  // local + no URL → lazily spawn `envoyage serve` and point at its loopback /mcp. `--ws-port`
-  // is the live-view frame stream (Increment 2's cockpit). Binary path is overridable so a
-  // from-source build points at target/debug/envoyage; default `envoyage` is on PATH.
-  // ponytail: fixed loopback ports; make them dynamic once two mints must run at once.
-  const bin = process.env.RINGTAIL_ENVOYAGE_BIN ?? "envoyage";
-  const httpPort = process.env.RINGTAIL_ENVOYAGE_HTTP_PORT ?? "8799";
-  const wsPort = process.env.RINGTAIL_ENVOYAGE_WS_PORT ?? "8800";
-  const child = spawn(bin, ["serve", "--http-port", httpPort, "--ws-port", wsPort], {
-    stdio: "ignore",
-    detached: false,
-  });
-  const url = `http://127.0.0.1:${httpPort}/mcp`;
-  await waitForPort(url);
-  return { url, child };
-}
-
 /**
- * Connect to Envoyage as an MCP client over HTTP-streaming — the clone of `connectDaemon`.
- * Backend (local Chromium vs CF browser) is decided by `getEnv()`, NOT a constructor arg: one
- * door, no DI ceremony. Throws when browser-mode is off (a fresh install has no browser).
+ * Build a `BrowserMinter` by CONSUMING a running Envoyage engine via the SDK. Dispatches by
+ * `RINGTAIL_BROWSER_MODE`, differing ONLY by endpoint (the deploy model's "swap a URL"):
+ *   • `cloud` (paid) — the HOSTED Envoyage endpoint (`RINGTAIL_ENVOYAGE_URL` + `_TOKEN`, required).
+ *     The hosted service owns the CF browser; Ringtail provisions none.
+ *   • `local` (OSS)  — a local `envoyage serve`: point at `RINGTAIL_ENVOYAGE_URL` when set, else
+ *     spawn the `envoyage` bin via the SDK's `launch()` (which owns a local Chromium).
+ *   • `off`          — throws the "browser-mint is off" guard (a fresh install has no browser).
+ * Both live modes pass the `ENGINE_OWNED_BROWSER` sentinel → the engine owns the browser.
  */
-export async function connectEnvoyage(env: Env = getEnv()): Promise<BrowserMinter> {
+export async function connectBrowserMinter(env: Env = getEnv()): Promise<BrowserMinter> {
   if (env.RINGTAIL_BROWSER_MODE === "off") {
     throw new Error("browser-mint is off — set RINGTAIL_BROWSER_MODE=local|cloud to enable it");
   }
-  const { url, child } = await resolveEndpoint(env);
-  const transportOpts = env.RINGTAIL_ENVOYAGE_TOKEN
-    ? { requestInit: { headers: { Authorization: `Bearer ${env.RINGTAIL_ENVOYAGE_TOKEN}` } } }
-    : {};
-  const transport = new StreamableHTTPClientTransport(new URL(url), transportOpts);
-  const client = new Client({ name: "ringtail-envoyage", version: "0.0.0" });
-  await client.connect(transport);
-  return {
-    call: async (tool, args = {}) =>
-      parseBrowserResult(await client.callTool({ name: tool, arguments: args })),
-    close: async () => {
-      await client.close();
-      child?.kill(); // reap a spawned local Envoyage; a shared hosted engine has no child
-    },
-  };
-}
-
-/**
- * Dispatch to the right `BrowserMinter` backend by `RINGTAIL_BROWSER_MODE`: `cloud` → the CF-CDP
- * direct driver (cloud-browser.ts, NO Envoyage service); `local`/`off` → local Envoyage. This is
- * `executeBrowserMint`'s default `connect`, so the whole mint chain is backend-agnostic. `off` still
- * reaches connectEnvoyage, which throws the "browser-mint is off" guard — one place owns that error.
- * ponytail: import the cloud backend lazily so a pure-local build never loads its CDP code path.
- */
-export async function connectBrowserMinter(env: Env = getEnv()): Promise<BrowserMinter> {
+  const token = env.RINGTAIL_ENVOYAGE_TOKEN;
   if (env.RINGTAIL_BROWSER_MODE === "cloud") {
-    const { connectCloudBrowser } = await import("./cloud-browser");
-    return connectCloudBrowser(env);
+    if (!env.RINGTAIL_ENVOYAGE_URL) {
+      throw new Error(
+        "cloud browser-mint needs RINGTAIL_ENVOYAGE_URL (the hosted Envoyage endpoint)",
+      );
+    }
+    const session = createSession({
+      endpoint: env.RINGTAIL_ENVOYAGE_URL,
+      cdpUrl: ENGINE_OWNED_BROWSER,
+      ...(token ? { token } : {}),
+    });
+    return sessionMinter(session, () => session.close());
   }
-  return connectEnvoyage(env);
+  // local: an explicit URL points at an already-running engine; no URL → spawn one via the SDK.
+  if (env.RINGTAIL_ENVOYAGE_URL) {
+    const session = createSession({
+      endpoint: env.RINGTAIL_ENVOYAGE_URL,
+      cdpUrl: ENGINE_OWNED_BROWSER,
+      ...(token ? { token } : {}),
+    });
+    return sessionMinter(session, () => session.close());
+  }
+  const local = await launch({
+    ...(process.env.RINGTAIL_ENVOYAGE_BIN ? { bin: process.env.RINGTAIL_ENVOYAGE_BIN } : {}),
+    ...(token ? { token } : {}),
+  });
+  return sessionMinter(local.session, () => local.stop());
 }
 
 // ── the browser-recipe registry + the handoff state machine ──────────────────────────────────
