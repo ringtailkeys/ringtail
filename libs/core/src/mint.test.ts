@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { putRoot, readStore, resolveRoot } from "@ringtail/store";
+import { addRoot, listRootsFor, putRoot, readStore, resolveRoot } from "@ringtail/store";
 import { hostAllowed } from "./allowlist";
 import {
   approveMintAction,
@@ -138,6 +138,30 @@ test("idempotent: a second identical mint REUSES the existing key (no second HTT
   expect(r.varName).toBe("RINGTAIL_MINT_TEST_KEY");
   // Reuse short-circuits BEFORE any HTTP — the provider was never hit again.
   expect(mock.calls.oauthToken).toEqual([]);
+});
+
+test("idempotency reads the PROJECT's .env.local, not process.env (BUG: shell-leaked var must MINT)", async () => {
+  // A var contaminating the CALLING SHELL's env (leaked from another project) but ABSENT from THIS
+  // project's .env.local must be treated as MISSING → minted here, not falsely "reused" with
+  // nothing landing. `PROJECT_ONLY_KEY` is not in the temp .env.local.
+  process.env.PROJECT_ONLY_KEY = "leaked-from-another-project-shell";
+  const action: MintAction = {
+    providerAccount: "mock",
+    method: "POST",
+    url: `${mock.url}/oauth/token`,
+    headers: { Authorization: "Bearer {{ROOT}}" },
+    body: { grant: "full" },
+    extract: { varName: "PROJECT_ONLY_KEY", path: "token" },
+  };
+  const minted = await executeMintAction(action, opts);
+  expect(minted.status).toBe("minted"); // NOT "reused" — process.env is ignored for idempotency
+  expect(readFileSync(envLocalPath, "utf8")).toContain("PROJECT_ONLY_KEY=mock-token-full");
+  expect(JSON.stringify(minted)).not.toContain("leaked-from-another-project-shell");
+
+  // Now that it IS in the project's .env.local, a second run reuses it.
+  const reused = await executeMintAction(action, opts);
+  expect(reused.status).toBe("reused");
+  delete process.env.PROJECT_ONLY_KEY;
 });
 
 test("header injection: a CRLF-in-header action is REJECTED and the root never leaks in the reason", async () => {
@@ -287,4 +311,74 @@ test("no-root: a {{ROOT}} action with no stored root recovers, never calls out",
   const r = await executeMintAction(action, opts);
   expect(r.status).toBe("no-root");
   expect(mock.calls.oauthToken).toEqual([]); // no root → no call
+});
+
+// ── multi-root selection guard (PRD §4.4) — the root-choice rides the parked choice flow ──
+
+test("multi-root: a >1-root provider parks a value-free root choice; only a valid rootId spends the CHOSEN root", async () => {
+  const ROOT_A = "ROOT-MULTI-A-SENTINEL-aaa";
+  const ROOT_B = "ROOT-MULTI-B-SENTINEL-bbb";
+  const a = addRoot({ provider: "mock", account: "mr", label: "acct-a", value: ROOT_A });
+  addRoot({ provider: "mock", account: "mr", label: "acct-b", value: ROOT_B });
+  expect(listRootsFor("mock:mr").length).toBe(2); // two roots for this account → ambiguous
+
+  const template: MintAction = {
+    providerAccount: "mock:mr",
+    method: "POST",
+    url: `${mock.url}/oauth/token`,
+    headers: { Authorization: "Bearer {{ROOT}}" },
+    body: { grant: "full" },
+    extract: { varName: "MULTIROOT_UNIT_KEY", path: "token" },
+  };
+
+  // propose → parked with the value-free root menu (labels/ids, NEVER a value).
+  const p1 = await proposeMintAction(template, opts);
+  expect(p1.result.status).toBe("needs-confirm");
+  const offered = p1.pending?.choices?.roots ?? [];
+  expect(offered.length).toBe(2);
+  expect(offered.map((r) => r.label).toSorted((a, b) => (a ?? "").localeCompare(b ?? ""))).toEqual([
+    "acct-a",
+    "acct-b",
+  ]);
+  expect(JSON.stringify(offered)).not.toContain(ROOT_A);
+  expect(JSON.stringify(offered)).not.toContain(ROOT_B);
+
+  // approve with NO rootId → rejected (the daemon can't silently pick when several exist).
+  const noRoot = await approveMintAction(p1.pending!.nonce);
+  expect(noRoot.status).toBe("rejected");
+  expect(noRoot.reason).toContain("root selection is required");
+
+  // approve with a FORGED rootId → rejected (must match an enumerated option — a compromised
+  // dashboard can't inject an arbitrary root). Fresh propose: a rejected approve burns the nonce.
+  const p2 = await proposeMintAction(
+    { ...template, extract: { varName: "MULTIROOT_UNIT_KEY_2", path: "token" } },
+    opts,
+  );
+  const forged = await approveMintAction(p2.pending!.nonce, {
+    resource: "",
+    permission: "",
+    rootId: "not-a-real-id",
+  });
+  expect(forged.status).toBe("rejected");
+  expect(forged.reason).toContain("not one of the offered roots");
+
+  // approve with root A's REAL id → minted, and ROOT_A (not ROOT_B) reached the host.
+  const p3 = await proposeMintAction(
+    { ...template, extract: { varName: "MULTIROOT_UNIT_KEY_3", path: "token" } },
+    opts,
+  );
+  const from = mock.calls.authSeen.length;
+  const ok = await approveMintAction(p3.pending!.nonce, {
+    resource: "",
+    permission: "",
+    rootId: a.id,
+  });
+  expect(ok.status).toBe("minted");
+  const used = mock.calls.authSeen.slice(from);
+  expect(used).toContain(`Bearer ${ROOT_A}`);
+  expect(used).not.toContain(`Bearer ${ROOT_B}`); // spent the CHOSEN root, not its sibling
+  // THE GUARANTEE holds through the guard path: no root value comes back.
+  const blob = JSON.stringify([p1.result, p3.result, ok]);
+  expect(blob).not.toContain(ROOT_A);
+  expect(blob).not.toContain(ROOT_B);
 });

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { MintChoices } from "./discovery";
+import type { HandoffState } from "./envoyage";
 import type { CredentialStatus } from "./index";
 
 /**
@@ -150,6 +152,39 @@ export interface PendingMint {
   danger?: Danger;
   /** The env-var the mint would file (a NAME, never a value) — shown on the approve card. */
   varName?: string;
+  /**
+   * GUIDED least-privilege mint (PRD §4.5): the value-free menu the human steers with — the
+   * discovered resources (NAMES/ids), the least-privilege permission options + the suggested
+   * (narrowest) default, and whether expiry applies. Present only when the agent flagged the
+   * mint `discover`; the dashboard renders it, the human's {resource, permission, expiry}
+   * selection rides back with the nonce on POST /api/action. Carries no secret value.
+   */
+  choices?: MintChoices;
+  /**
+   * ROTATION (PRD Phase 2): true when this parked approval is a credential ROTATION (mint a
+   * fresh scoped key → switch the sink → revoke the old key) rather than a plain mint. The
+   * ONE human approval of the parked nonce authorizes the whole atomic rotate (mint + revoke
+   * are both consequential, but the human's "yes, rotate" covers both). Value-free label so
+   * the dashboard card reads "Rotate <var>" instead of "Mint <var>".
+   */
+  rotate?: boolean;
+  /**
+   * BATCH PROVISION (the North Star): true when this parked approval covers a WHOLE-project batch
+   * (N mint/wire actions under ONE nonce — "provision these N keys for <project>?") rather than a
+   * single mint. The one approval runs the whole batch (proposeProvision/approveProvision); the
+   * daemon routes a batch nonce to `approveProvision`. `count` is how many actions it covers — a
+   * value-free label so the card reads "Provision N keys" instead of "Mint <var>".
+   */
+  batch?: boolean;
+  count?: number;
+  /**
+   * BROWSER MINT (Envoyage): true when this parked approval is a browser-driven mint of a
+   * dashboard-only provider (no mint-API). The one approval lets the daemon drive the provider's
+   * web console; the human solves any login/CAPTCHA/OTP in the live view. Value-free label so the
+   * card reads "Mint <var> in the browser". The daemon routes a browser nonce to
+   * `approveMintViaBrowser`.
+   */
+  browser?: boolean;
 }
 
 /**
@@ -171,6 +206,40 @@ export interface AuthState {
   limitReached?: boolean;
 }
 
+/**
+ * A live browser-mint session the human can watch + take over (Increment 2). VALUE-FREE:
+ * a session id, the provider being minted, the live-view WS URL, the handoff state, and
+ * Envoyage's canned handoff reason. NO frame bytes, NO minted value ever ride here — the
+ * frames stream over the WS (out-of-band), and the secret the human types goes straight
+ * into the real page (captured daemon-side). This just tells the cockpit "a browser mint
+ * is live, here's where to watch it and whether it needs you".
+ */
+export interface BrowserSession {
+  /** Opaque id (the parked browser nonce) — lets the card key/dedupe a session. */
+  id: string;
+  /** The provider being minted (a NAME — e.g. "openai"). */
+  provider: string;
+  /** The Envoyage live-view WebSocket URL (`--ws-port`). Loopback in `local` mode. */
+  wsUrl: string;
+  /** Where the handoff stands: DRIVING → HUMAN_NEEDED → PAUSED → RESUMED. */
+  state: HandoffState;
+  /** Envoyage's canned handoff reason when state is HUMAN_NEEDED/PAUSED (e.g. "password"). */
+  reason?: string;
+  /** Rocco-voice action narration, appended as the mint drives (the cockpit's SSE bubbles).
+   * VALUE-FREE — tool + non-secret label only, never a minted value (see stepLabel). */
+  bubbles?: BrowserBubble[];
+  /** Set once the mint finishes so the card can play its terminal sweep + Rocco pose:
+   * `minted` → success, `failed` → error. Absent while still driving. */
+  outcome?: "minted" | "failed";
+}
+
+/** One SSE action bubble — a value-free narration line + whether it's the orange handoff bubble. */
+export interface BrowserBubble {
+  text: string;
+  /** The orange "your turn" bubble (a human wall) vs a plain green driving bubble. */
+  handoff?: boolean;
+}
+
 export interface DaemonSnapshot {
   grid: GridRow[];
   wizard: Wizard | null;
@@ -180,6 +249,9 @@ export interface DaemonSnapshot {
   project: ActiveProject | null;
   /** Consequential mints the agent proposed, awaiting a human approve (unforgeable nonce). */
   pendingMints: PendingMint[];
+  /** A live browser-mint the human can watch + take over (Increment 2). Null when none is
+   * running. Value-free (id + provider + WS URL + handoff state); frames stream over the WS. */
+  browserSession?: BrowserSession | null;
   /** Account/entitlement — drives the sign-in gate + freemium enforcement. */
   auth: AuthState;
   /** Which edition the daemon runs. `oss` (default, `ringtail up` from source) → the

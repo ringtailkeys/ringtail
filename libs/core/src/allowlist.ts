@@ -15,6 +15,15 @@ export const DOMAIN_ALLOWLIST: Record<string, string[]> = {
   neon: ["console.neon.tech"],
   cloudflare: ["api.cloudflare.com"],
   creem: ["api.creem.io"],
+  // GoDaddy: list domains + set-nameservers (point a domain at Cloudflare's NS). One host.
+  godaddy: ["api.godaddy.com"],
+  // OAuth-grant providers (PRD §4.9): the vetted host a grant's access token may reach.
+  github: ["api.github.com"],
+  // TODO(verify): Google APIs span many *.googleapis.com subdomains (exact-hostname
+  // match) — add the exact API host you provision against; www.googleapis.com covers
+  // the legacy/discovery + API-Keys surface. Widen deliberately, never to a wildcard.
+  google: ["www.googleapis.com", "cloudresourcemanager.googleapis.com", "apikeys.googleapis.com"],
+  vercel: ["api.vercel.com"],
   // better-auth mints locally (no external API) — no host may carry its secret.
   "better-auth": [],
   // The offline mock provider is just another allowlisted host: it binds loopback

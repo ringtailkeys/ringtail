@@ -15,6 +15,7 @@ import { recipe as resend } from "./recipes/resend";
 import { recipe as posthog } from "./recipes/posthog";
 import { recipe as infisical } from "./recipes/infisical";
 import { recipe as creem } from "./recipes/creem";
+import { recipe as godaddy } from "./recipes/godaddy";
 import { mockRecipe, mockBadScopeRecipe, mockFailProvisionRecipe } from "./recipes/mock";
 
 export {
@@ -23,6 +24,8 @@ export {
   mockBadScopeRecipe,
   mockFailProvisionRecipe,
 } from "./recipes/mock";
+// GoDaddy: the "wire the domain to Cloudflare's nameservers" action builder (value-free).
+export { buildSetNameserversAction, type SetNameserversAction } from "./recipes/godaddy";
 
 /**
  * The real provider registry — what the dashboard's connection grid renders and
@@ -36,6 +39,7 @@ export const RECIPES: Record<string, Recipe> = {
   [posthog.id]: posthog,
   [infisical.id]: infisical,
   [creem.id]: creem,
+  [godaddy.id]: godaddy,
   [betterAuth.id]: betterAuth,
 };
 

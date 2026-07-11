@@ -18,10 +18,12 @@ import {
 } from "@ringtail/ui";
 import { Fragment, useEffect, useState } from "react";
 import { AgentPicker } from "./cockpit/AgentPicker";
+import { BrowserHandoff } from "./cockpit/BrowserHandoff";
 import { ChooseProject } from "./cockpit/ChooseProject";
+import { ConnectCommand } from "./cockpit/ConnectCommand";
+import { ConnectPanel } from "./cockpit/ConnectPanel";
 import { LiveGrid } from "./cockpit/LiveGrid";
 import { PendingMints } from "./cockpit/PendingMints";
-import { RootIntake } from "./cockpit/RootIntake";
 import { WizardModal } from "./cockpit/WizardModal";
 import {
   approveAction,
@@ -263,14 +265,26 @@ function Cockpit({
           />
         </Reveal>
       )}
-      {live && <RootIntake live={live} />}
+      {/* Persistent "your agent" panel — the connect command is always one copy away in
+          the cockpit, so a stranger never needs the README to (re)connect their agent. */}
+      {live && (
+        <Reveal delay={30}>
+          <ConnectCommand agentName={snapshot.agent?.name} compact={Boolean(snapshot.agent)} />
+        </Reveal>
+      )}
+      {live && <ConnectPanel live={live} agentName={snapshot.agent?.name} />}
       {/* Screen ③ — the parked-mint approve card. Renders only when the agent has
-          authored a root-spending mint awaiting the human's nonce-gated Approve. This
-          is the P0 fix: without it every real mint stalled at needs-confirm forever. */}
+          authored a root-spending mint awaiting the human's nonce-gated Approve. A GUIDED
+          mint (PRD §4.5) carries `choices` → the card renders a least-privilege selection
+          UI whose {resource, permission, expiry, rootId} rides back with the nonce. */}
       <PendingMints
         pending={snapshot.pendingMints}
-        onApprove={live ? (nonce) => void approveMint(nonce) : undefined}
+        onApprove={live ? (nonce, selection) => void approveMint(nonce, selection) : undefined}
       />
+      {/* The live browser-mint card (Increment 2): Rocco drives the provider console, the human
+          steps in only for the password wall. Rides snapshot.browserSession off SSE; null when no
+          browser mint runs. Value-free — the agent never sees the password. */}
+      <BrowserHandoff session={snapshot.browserSession} />
       <LiveGrid grid={snapshot.grid} />
       <div
         style={{

@@ -3,6 +3,7 @@ import { getEnv } from "@ringtail/config";
 import { getRecipe, RECIPES, type Recipe, type ValidateResult } from "@ringtail/recipes";
 import { syncCredential, type Environment } from "@ringtail/sinks";
 import { discoverCredentials, putCredential, readStore, resolveRootCreds } from "@ringtail/store";
+import { detectProvider } from "./provision";
 import {
   GRID_ENVS,
   WizardSchema,
@@ -13,6 +14,8 @@ import {
 } from "./wizard";
 
 export type { Environment } from "@ringtail/sinks";
+// The value-free root registry view (PRD §4.4) — rides the mint choice + the intake list.
+export type { RootInfo } from "@ringtail/store";
 
 // The generative-UI contract (Wizard/Step/Action + the env axis) — the surface
 // the daemon validates and the dashboard renders. Re-exported through the public door.
@@ -23,6 +26,21 @@ export * from "./actions";
 // allowlist (the structural floor). ONE path for mint · permission-check · wire.
 export * from "./allowlist";
 export * from "./mint";
+// BROWSER MINT — the no-mint-API path: the backend-agnostic BrowserMinter door + the browser-recipe
+// registry + the detect→pause→wait→resume handoff state machine + `connectBrowserMinter` dispatch.
+export * from "./envoyage";
+// The CLOUD BrowserMinter backend — drives a Cloudflare browser over CDP directly (no Envoyage).
+export * from "./cloud-browser";
+// Credential ROTATION (PRD Phase 2) — the mint-new → reconfigure → revoke-old state machine.
+export * from "./rotate";
+// The guided least-privilege DISCOVERY registry (PRD §4.5) — value-free resource +
+// permission enumeration specs, one row per provider.
+export * from "./discovery";
+// BATCH PROVISION (the North Star) — the value-free planner + the var→provider map.
+// The one-approval batch executor (proposeProvision/approveProvision) lives in ./mint.
+export * from "./provision";
+// The OAuth "Connect a provider" registry + loopback PKCE flow (PRD §4.9).
+export * from "./oauth";
 // The offline mock provider — dev daemon + the P2 driver reach it through core's door.
 export { startMockProvider, type MockProvider } from "./mock-provider";
 
@@ -266,26 +284,8 @@ export interface PlanEntry {
 const SECTION = /^#+\s*[─\-=*]*\s*([A-Za-z][A-Za-z0-9 /&._-]*?)\s*[─\-=*]*\s*$/;
 const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 
-// Known env-var → provider (recipe id) fallback, so a header-LESS `.env.example` still
-// splits into real provider rows instead of collapsing to one 'other'. Prefix match, first
-// hit wins — specific prefixes before general ones. Ids MUST mirror @ringtail/recipes ids
-// (neon · resend · better-auth · posthog · cloudflare · creem · infisical) — never invent one.
-const VAR_PROVIDER: [RegExp, string][] = [
-  [/^(DATABASE_URL|POSTGRES|PG|NEON)/, "neon"],
-  [/^RESEND/, "resend"],
-  [/^BETTER_AUTH/, "better-auth"],
-  [/^(NEXT_PUBLIC_)?POSTHOG/, "posthog"],
-  [/^(CLOUDFLARE|CF)_/, "cloudflare"],
-  [/^(CREEM|STRIPE|DODO)/, "creem"], // the billing provider
-  [/^INFISICAL/, "infisical"],
-];
-
-/** Map an env-var NAME to its provider (recipe id) by known prefix, or undefined. Used only
- *  as a fallback when a var carries no section header. Names only — never touches values. */
-export function detectProvider(key: string): string | undefined {
-  const up = key.toUpperCase();
-  return VAR_PROVIDER.find(([re]) => re.test(up))?.[1];
-}
+// detectProvider (var → recipe id) + its VAR_PROVIDER table now live in ./provision (a leaf
+// module shared with the batch planner) and are re-exported through this file's `export *`.
 
 /**
  * Read `.env.example` (the manifest) into the plan: every credential the project

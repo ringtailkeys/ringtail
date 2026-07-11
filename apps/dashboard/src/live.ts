@@ -1,5 +1,5 @@
 import type { CredentialStatus } from "@ringtail/ui";
-import type { DaemonSnapshot, GridEnv, GridRow } from "@ringtail/core";
+import type { DaemonSnapshot, GridEnv, GridRow, MintSelection, RootInfo } from "@ringtail/core";
 import { MIXED } from "./cockpit/fixtures";
 
 /**
@@ -41,22 +41,24 @@ export async function submitStep(stepId: string, value?: string): Promise<{ stat
   return (await res.json()) as { status: string };
 }
 
-/** The DASHBOARD root-key intake: POST a per-account MASTER key user → daemon
- * (never through the agent), stored in the global ~/.ringtail vault. Same trust
- * path as a paste. Returns the value-free result ({ providerAccount, roots }) — the
- * NAMES of accounts we now hold a root for, never a value; throws on transport failure. */
+/** The DASHBOARD root-key intake: POST a MASTER key user → daemon (never through the
+ * agent), stored in the global ~/.ringtail vault. Same trust path as a paste. A provider
+ * can hold MANY named roots (PRD §4.4) — an optional `label` (e.g. "prod"/"staging") + an
+ * optional agency `account` distinguish siblings. Returns the value-free registry (RootInfo[]
+ * — ids/labels/accounts, NEVER a value); throws on transport failure. */
 export async function submitRoot(
-  providerAccount: string,
+  provider: string,
   value: string,
-): Promise<{ providerAccount: string; roots: string[] }> {
+  opts: { label?: string; account?: string } = {},
+): Promise<{ roots: RootInfo[] }> {
   const token = await ensureToken();
   const res = await fetch(`${DAEMON_URL}/api/root`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ providerAccount, value }),
+    body: JSON.stringify({ provider, value, ...opts }),
   });
   if (!res.ok) throw new Error(`submitRoot failed: ${res.status}`);
-  return (await res.json()) as { providerAccount: string; roots: string[] };
+  return (await res.json()) as { roots: RootInfo[] };
 }
 
 /** The user → agent direction channel: POST the chat text to the daemon, which
@@ -93,15 +95,108 @@ export async function approveAction(id: string, confirmed?: boolean): Promise<un
  * with the stored root key. The agent never received this nonce, so it can't self-
  * approve the write it authored. Body is `{ nonce }` (NOT `{ id, confirmed }` — that's
  * the mapped-action path). Returns the value-free run result; throws on transport failure. */
-export async function approveMint(nonce: string): Promise<unknown> {
+export async function approveMint(nonce: string, selection?: MintSelection): Promise<unknown> {
   const token = await ensureToken();
   const res = await fetch(`${DAEMON_URL}/api/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ nonce }),
+    // A GUIDED mint (PRD §4.5) rides the human's {resource, permission, expiry, rootId}
+    // selection alongside the nonce; a plain mint sends just the nonce. Value-free (ids only).
+    body: JSON.stringify(selection ? { nonce, selection } : { nonce }),
   });
   if (!res.ok) throw new Error(`approveMint failed: ${res.status}`);
   return res.json();
+}
+
+// ── OAuth "Connect a provider" (PRD §4.9) — the dashboard drives the loopback flow ──
+
+/** The value-free connect surface: providers already connected (NAMES + scopes + expiry,
+ * never a token) + the connector catalogue (signup / api-keys URLs + needs-creds flags) +
+ * `roots` — the named-root registry (ids/labels/accounts only) so the panel can confirm
+ * "you already hold a root for this provider" at a glance. */
+export interface ConnectStatus {
+  connected: Array<{ provider: string; scopes: string[]; expiresAt?: number; obtainedAt: number }>;
+  connectors: Array<{
+    id: string;
+    connected: boolean;
+    needsClientCreds: boolean;
+    scopes: string[];
+    signupUrl?: string;
+    apiKeysUrl?: string;
+  }>;
+  roots?: RootInfo[];
+}
+
+/** GET the connect status (connected providers + the connector catalogue). Empty on down. */
+export async function fetchConnectStatus(): Promise<ConnectStatus> {
+  try {
+    const token = await ensureToken();
+    const res = await fetch(`${DAEMON_URL}/api/connect/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return (await res.json()) as ConnectStatus;
+  } catch {
+    return { connected: [], connectors: [] };
+  }
+}
+
+// ── the connect-agent command (the "hidden `claude mcp add`" fix) ────────────────
+// The SPA knows its own origin + can fetch the loopback session token, so it can render
+// the EXACT command a stranger runs to connect their agent — no README, no hidden knowledge.
+// ponytail: mirrors services/daemon/agents.ts command templates for the two agents the
+// task names (same static-mirror pattern as vendors.ts mirrors the recipes registry). Add
+// a row here when the daemon grows another agent template.
+
+/** THIS daemon's origin — same-origin when it served the page, else the injected daemon URL. */
+export function daemonOrigin(): string {
+  return DAEMON_URL || (typeof window !== "undefined" ? window.location.origin : "");
+}
+
+export interface AgentAddCommand {
+  id: string;
+  name: string;
+  command: string;
+}
+
+/** The copy-paste MCP-connect command per agent, pre-filled with origin + session token. */
+export function agentAddCommands(origin: string, token: string): AgentAddCommand[] {
+  const url = `${origin}/mcp`;
+  return [
+    {
+      id: "claude",
+      name: "Claude Code",
+      command: `claude mcp add ringtail --transport http ${url} --header "Authorization: Bearer ${token}"`,
+    },
+    {
+      id: "codex",
+      name: "Codex CLI",
+      command: `# add to ~/.codex/config.toml\n[mcp_servers.ringtail]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }`,
+    },
+  ];
+}
+
+/** Resolve origin + the loopback session token → the ready-to-render agent commands. */
+export async function fetchAgentCommands(): Promise<AgentAddCommand[]> {
+  const token = await ensureToken();
+  return agentAddCommands(daemonOrigin(), token);
+}
+
+/** Start the OAuth flow: POST the provider → daemon builds the loopback authorize URL
+ * (PKCE + state parked in the daemon) → returns { authorizeUrl } for us to open in a new
+ * tab. Value-free: no token exists yet. Throws with the daemon's message on 400. */
+export async function connectStart(provider: string): Promise<{ authorizeUrl: string }> {
+  const token = await ensureToken();
+  const res = await fetch(`${DAEMON_URL}/api/connect/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ provider }),
+  });
+  if (!res.ok)
+    throw new Error(
+      ((await res.json().catch(() => ({}))) as { error?: string }).error ??
+        `connect failed: ${res.status}`,
+    );
+  return (await res.json()) as { authorizeUrl: string };
 }
 
 export interface DetectedAgent {

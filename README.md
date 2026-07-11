@@ -128,13 +128,28 @@ The whole product, in order. Layers 1–2 exist only to make layer 3 possible; l
 none of them dead-end.
 
 1. **Get the root keys** — the only place a human is needed. A wizard (`open-url` → `paste` →
-   `confirm`) + local discovery + the recipe fast-path. One consent per provider, ever.
+   `confirm`) + local discovery + the recipe fast-path, or **connect an OAuth provider**
+   (`listConnectors` shows what's connectable + where to sign up; the dashboard does the loopback
+   PKCE handshake). One consent per provider, ever.
 2. **Map the actions** — the agent maps repo-specific + cross-tool next steps: a Neon branch per
    env, Infisical → CF Pages bindings, a Workers binding, point a domain, create the R2 bucket
    your code already references.
 3. **Automate it — the point.** With the root grant, everything downstream is `auto`: the agent
    orchestrates a chain of API calls and the work just happens. Safe actions run themselves; only
-   destructive ones (domain transfer, NS swap, delete) hard-confirm.
+   destructive ones (domain transfer, NS swap, delete) hard-confirm. **A new project provisions
+   itself** (`provisionProject`): connect each provider **once**, then the agent authors one batch of
+   mints/wires — every needed key minted from your connected roots — parked under **one approval**
+   ("provision these N keys for &lt;project&gt;?"); the vars it can't mint are classified honestly
+   (`needs-root` · `guided-paste` · `skip` for a non-secret like `DATABASE_URL`, never faked).
+   **Rotate a key** the same way (`rotateKey`): mint a fresh scoped key → switch the sink to it →
+   revoke the old one, as one human-approved atomic operation — with safe rollback (mint/sink fail →
+   keep the old working key; revoke fail → new key live, "revoke the old one manually"). All of it
+   daemon-local, value-free. For a **dashboard-only provider with no mint-API**, Ringtail can drive
+   the provider's web console with a real browser (`mintViaBrowser`, Envoyage): it works headless
+   until it hits a genuine human wall (login/CAPTCHA/OTP), then **hands off to you in a live view** —
+   you type the password, the agent stays structurally blind to it — and resumes to mint + file the
+   key through the same validate + sink. Off by default (`RINGTAIL_BROWSER_MODE=off`); flip it to
+   `local` (a local Chromium) or `cloud` (a Cloudflare browser) to enable.
 4. **Recover** — a wrong scope or a failed action is a *first-class state*, not an exception.
    Ringtail explains it in plain language and routes to the fix; the agent re-plans into a
    recovery wizard. Every failure surfaces a cause *and* a next step.

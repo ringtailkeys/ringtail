@@ -1,8 +1,32 @@
 import { randomBytes } from "node:crypto";
 import { syncCredential, type Environment } from "@ringtail/sinks";
-import { discoverCredentials, putCredential, resolveRoot } from "@ringtail/store";
+import {
+  appendRotation,
+  discoverCredentials,
+  listConnectedProviders,
+  listRoots,
+  listRootsFor,
+  putCredential,
+  readProjectEnvLocal,
+  readStore,
+  resolveRoot,
+  resolveRootById,
+} from "@ringtail/store";
+import { getEnv } from "@ringtail/config";
+import { getRecipe } from "@ringtail/recipes";
 import { z } from "zod";
 import { hostAllowed, hostOf, providerOf } from "./allowlist";
+import {
+  browserRecipeFor,
+  connectBrowserMinter,
+  driveBrowserMint,
+  type BrowserMinter,
+  type HandoffState,
+} from "./envoyage";
+import { getDiscoverySpec, type MintChoices, type MintSelection } from "./discovery";
+import { resolveGrantToken } from "./oauth";
+import { planProvision, type ProvisionItem } from "./provision";
+import { type RotationEffects, type RotationOutcome, runRotation } from "./rotate";
 import { DangerSchema, type PendingMint } from "./wizard";
 
 /**
@@ -18,6 +42,17 @@ import { DangerSchema, type PendingMint } from "./wizard";
  */
 
 const ROOT_PLACEHOLDER = "{{ROOT}}";
+
+/**
+ * GUIDED least-privilege placeholders (PRD §4.5). The agent authors a SCOPED-mint template
+ * carrying these where the human's steered choices go; the daemon substitutes them from the
+ * approved selection at run time (into the url + body only — headers carry {{ROOT}}). Same
+ * template mechanic as {{ROOT}}, so the least-privilege scope is baked in from the human's
+ * pick, never blanket full_access authored by the agent.
+ */
+const RESOURCE_PLACEHOLDER = "{{RESOURCE}}";
+const PERMISSION_PLACEHOLDER = "{{PERMISSION}}";
+const EXPIRY_PLACEHOLDER = "{{EXPIRY}}";
 
 /**
  * The agent-authored action. `headers` may carry `{{ROOT}}` — the daemon
@@ -43,11 +78,24 @@ export const MintActionSchema = z.object({
       varName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "varName must be a valid env-var name"),
       /** Dot-path into the JSON response, e.g. `token` or `data.api_key`. */
       path: z.string().min(1),
+      /** OPTIONAL dot-path to the provider's key ID in the response (e.g. `id`). VALUE-FREE
+       * — an identifier, not the secret. Captured + stored so a later ROTATION can revoke
+       * exactly this key by id (the `{{OLD_KEY_ID}}` the revoke call substitutes). */
+      idPath: z.string().min(1).optional(),
     })
     .optional(),
   /** `confirm`/`destructive` require an explicit `confirmed:true` to run (approve
    * gate). Omitted / `safe` = auto-run (read-only permission checks never nag). */
   danger: DangerSchema.optional(),
+  /**
+   * GUIDED least-privilege mint (PRD §4.5). When true, the daemon runs the provider's
+   * value-free DISCOVERY probe (a read-only GET) BEFORE parking this consequential mint,
+   * enumerates the real resources + permission options, and parks them as `choices` for the
+   * human to steer. The human's {resource, permission, expiry} pick is substituted into the
+   * `{{RESOURCE}}`/`{{PERMISSION}}`/`{{EXPIRY}}` placeholders (url + body) at approve time.
+   * The provider needs a discovery spec (getDiscoverySpec) or the request is rejected.
+   */
+  discover: z.boolean().optional(),
 });
 export type MintAction = z.infer<typeof MintActionSchema>;
 
@@ -56,7 +104,20 @@ export interface MintResult {
   providerAccount: string;
   /** The env-var name written (mint) — never its value. */
   varName?: string;
-  status: "minted" | "reused" | "ok" | "rejected" | "needs-confirm" | "no-root" | "failed";
+  status:
+    | "minted"
+    | "reused"
+    | "ok"
+    | "rejected"
+    | "needs-confirm"
+    | "no-root"
+    // BROWSER MINT: the value minted but validate-after-mint found it under-scoped — filed
+    // NOTHING, same as an API mint's wrong-scope. Drives the wrong-scope grid status.
+    | "wrong-scope"
+    | "failed"
+    // ROTATION (PRD Phase 2): the new key is live + working, but the OLD key could NOT be
+    // revoked — the human must revoke it manually (see `reason`). NOT a broken project.
+    | "partial";
   /** Plain-language cause (allowlist reject, missing scope, rate-limit…). No value. */
   reason?: string;
   /** Public correlation id for a parked (`needs-confirm`) consequential mint. NOT the
@@ -72,6 +133,13 @@ export interface MintOpts {
    * the MCP `mintKey` tool routes through `proposeMintAction` (which drops it); this is
    * flipped `true` ONLY by `approveMintAction` after a nonce-carrying human approve. */
   confirmed?: boolean;
+  /**
+   * MULTI-ROOT (PRD §4.4): the SPECIFIC root value the daemon resolved from the human's
+   * selected `rootId`. Daemon-INTERNAL, set ONLY by `approveMintAction` — never by the agent
+   * (the agent authors names, not values). When set it overrides `resolveRoot` so the mint
+   * spends exactly the chosen root even when the provider holds several (which is ambiguous).
+   */
+  rootValue?: string;
 }
 
 /**
@@ -117,6 +185,12 @@ function pluck(obj: unknown, path: string): unknown {
     if (acc && typeof acc === "object") return (acc as Record<string, unknown>)[key];
     return undefined;
   }, obj);
+}
+
+/** Pluck a VALUE-FREE provider key id (a string identifier) at `idPath`, or undefined. */
+function extractKeyId(body: unknown, idPath: string): string | undefined {
+  const id = pluck(body, idPath);
+  return id === undefined || id === null || id === "" ? undefined : String(id);
 }
 
 /**
@@ -185,6 +259,92 @@ function scrub(reason: string, secrets: string[]): string {
 }
 
 /**
+ * The shared root-resolve + outbound-call core (gates 4 + 5), factored so the mint executor
+ * AND the read-only discovery probe walk the SAME security path — one place resolves
+ * `{{ROOT}}`, refuses an off-allowlist redirect, and scrubs secrets from any error. Returns
+ * the successful Response for the caller to consume, or a value-free error MintResult.
+ * The caller MUST have already passed `structuralReject` (allowlist + header hygiene).
+ */
+async function sendWithRoot(
+  action: MintAction,
+  rootOverride?: string,
+): Promise<{ res: Response } | { error: MintResult }> {
+  const { providerAccount } = action;
+  // 4. resolve the root key. A daemon-supplied `rootOverride` (the human's selected root id,
+  //    resolved to a value in approveMintAction) wins — it disambiguates a multi-root provider.
+  //    Otherwise: a pasted single root, else an OAuth grant token (refreshed in place).
+  const root =
+    rootOverride ??
+    resolveRoot(providerAccount) ??
+    (await resolveGrantToken(providerOf(providerAccount)));
+  if (usesRoot(action) && !root) {
+    return {
+      error: {
+        providerAccount,
+        status: "no-root",
+        reason: `no root key stored for ${providerAccount} — paste one in the dashboard first`,
+      },
+    };
+  }
+  const secrets = root ? [root] : [];
+  const headers: Record<string, string> = {
+    ...(action.body !== undefined ? { "Content-Type": "application/json" } : {}),
+    ...resolveHeaders(action.headers ?? {}, root ?? ""),
+  };
+
+  // 5. the HTTP call — the ONLY place the root leaves the daemon, toward the allowlisted
+  //    host verified by structuralReject. `redirect:"manual"` so a 3xx can never carry the
+  //    root to an off-allowlist Location (fetch would not re-check the hop → we refuse it).
+  let res: Response;
+  try {
+    res = await fetch(action.url, {
+      method: action.method,
+      headers,
+      body: action.body !== undefined ? JSON.stringify(action.body) : undefined,
+      redirect: "manual",
+    });
+  } catch (err) {
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: scrub(`network error: ${(err as Error).message}`, secrets),
+      },
+    };
+  }
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: "provider returned a redirect — not followed (off-allowlist hop blocked)",
+      },
+    };
+  }
+  if (!res.ok) {
+    const gap =
+      res.status === 401 || res.status === 403
+        ? "root key lacks the required permission/scope"
+        : `provider returned HTTP ${res.status}`;
+    let detail = "";
+    try {
+      const b = (await res.json()) as { error?: string; message?: string };
+      detail = b.error ?? b.message ?? "";
+    } catch {
+      /* non-JSON body — status is enough */
+    }
+    return {
+      error: {
+        providerAccount,
+        status: "failed",
+        reason: scrub(detail ? `${gap}: ${detail}` : gap, secrets),
+      },
+    };
+  }
+  return { res };
+}
+
+/**
  * Run one agent-authored action end-to-end. Gate order is deliberate:
  *   1. allowlist — the structural floor: a non-allowlisted host is REJECTED before
  *      the root key is even resolved, so it can never leave toward an arbitrary URL.
@@ -216,100 +376,41 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
     };
   }
 
-  // 3. idempotency — reuse an already-provisioned key instead of duplicating it.
+  // 3. idempotency — reuse a key already provisioned FOR THIS PROJECT. Checks the target
+  //    project's OWN `.env.local` ONLY — never process.env / the global vault. A var that exists
+  //    only in the calling shell (e.g. a RESEND_API_KEY leaked from another project) is MISSING
+  //    here and gets minted, instead of being falsely reported "reused" with nothing landing.
   if (action.extract) {
-    const [hit] = discoverCredentials([action.extract.varName], {
-      envLocalPath: opts.envLocalPath,
-    });
-    if (hit) {
+    const existing = readProjectEnvLocal(action.extract.varName, opts.envLocalPath);
+    if (existing) {
       return {
         providerAccount,
         varName: action.extract.varName,
         status: "reused",
-        reason: `${action.extract.varName} already provisioned (${hit.source}) — reused, not re-minted`,
+        reason: `${action.extract.varName} already provisioned (.env.local) — reused, not re-minted`,
       };
     }
   }
 
-  // 4. resolve the root key (only required when a header references {{ROOT}}).
-  const root = resolveRoot(providerAccount);
-  if (usesRoot(action) && !root) {
-    return {
-      providerAccount,
-      status: "no-root",
-      reason: `no root key stored for ${providerAccount} — paste one in the dashboard first`,
-    };
-  }
-  // Known secret VALUES to redact from any provider/exception-derived reason before it
-  // leaves the daemon (defence in depth behind the header-hygiene reject above).
-  const secrets = root ? [root] : [];
-  const headers: Record<string, string> = {
-    ...(action.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    ...resolveHeaders(action.headers ?? {}, root ?? ""),
-  };
-
-  // 5. the HTTP call — the ONLY place the root key leaves the daemon, toward the
-  //    allowlisted host verified in gate 1. `redirect: "manual"` so a 3xx from an
-  //    allowlisted host can NEVER carry the root key to an off-allowlist Location:
-  //    fetch does not re-check the hop, so we refuse to follow it (a redirect = failed).
-  let res: Response;
-  try {
-    res = await fetch(action.url, {
-      method: action.method,
-      headers,
-      body: action.body !== undefined ? JSON.stringify(action.body) : undefined,
-      redirect: "manual",
-    });
-  } catch (err) {
-    return {
-      providerAccount,
-      status: "failed",
-      reason: scrub(`network error: ${(err as Error).message}`, secrets),
-    };
-  }
-
-  // A redirect off the allowlisted host is NOT followed — the root would ride the
-  // re-issued request to whatever Location the provider returned (open-redirect exfil).
-  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-    return {
-      providerAccount,
-      status: "failed",
-      reason: "provider returned a redirect — not followed (off-allowlist hop blocked)",
-    };
-  }
-
-  if (!res.ok) {
-    // Plain-language recovery cause (Layer 4) — a scope gap reads as a scope gap.
-    const gap =
-      res.status === 401 || res.status === 403
-        ? "root key lacks the required permission/scope"
-        : `provider returned HTTP ${res.status}`;
-    let detail = "";
-    try {
-      const b = (await res.json()) as { error?: string; message?: string };
-      detail = b.error ?? b.message ?? "";
-    } catch {
-      /* non-JSON body — status is enough */
-    }
-    // Scrub: a provider that reflects our Authorization header / a submitted field into
-    // its error body can echo the root back — it must never survive into the reason.
-    return {
-      providerAccount,
-      status: "failed",
-      reason: scrub(detail ? `${gap}: ${detail}` : gap, secrets),
-    };
-  }
+  // 4 + 5. resolve the root key (the human's selected root via opts.rootValue when multi-root,
+  //         else a pasted single root or an OAuth grant) and make the ONE outbound call to the
+  //         allowlisted host — off-allowlist redirect refused, secrets scrubbed from any error.
+  //         Shared with the discovery probe (sendWithRoot).
+  const sent = await sendWithRoot(action, opts.rootValue);
+  if ("error" in sent) return sent.error;
+  const { res } = sent;
 
   // 6. no extract → a permission-check / wire action succeeded (no key to file).
   if (!action.extract) return { providerAccount, status: "ok" };
 
   // extract the minted secret → sink (.env.local for local, Infisical for deployed).
-  let value: unknown;
+  let bodyJson: unknown;
   try {
-    value = pluck(await res.json(), action.extract.path);
+    bodyJson = await res.json();
   } catch {
     return { providerAccount, status: "failed", reason: "response was not JSON — cannot extract" };
   }
+  const value = pluck(bodyJson, action.extract.path);
   if (value === undefined || value === null || value === "") {
     return {
       providerAccount,
@@ -320,14 +421,164 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
 
   const varName = action.extract.varName;
   const minted = String(value);
+  // Capture the provider key id (value-free) when the agent gave an `idPath`, so a later
+  // rotation can revoke exactly this key. Absent idPath / missing field → no keyId (fine).
+  const keyId = action.extract.idPath ? extractKeyId(bodyJson, action.extract.idPath) : undefined;
+  await fileMinted(varName, minted, opts, providerAccount, keyId);
+  return { providerAccount, varName, status: "minted" };
+}
+
+/**
+ * Close the loop: file a freshly-minted VALUE into the sink (.env.local / Infisical) AND the
+ * vault, stamped with the audit name as provenance. The ONE place a minted value lands — shared
+ * by the HTTP mint executor (executeMintAction) AND the browser mint executor (executeBrowserMint)
+ * so THE GUARANTEE + the naming are a single source of truth. Value-free by construction (writes
+ * only; returns nothing).
+ */
+async function fileMinted(
+  varName: string,
+  minted: string,
+  opts: MintOpts,
+  providerAccount: string,
+  keyId?: string,
+): Promise<void> {
   await syncCredential(varName, minted, { env: opts.env, envLocalPath: opts.envLocalPath });
-  // Persist to the vault with the audit name as provenance (find + revoke later).
   putCredential(varName, {
     value: minted,
     provider: auditName(opts.repoName, opts.env, providerAccount),
     updatedAt: new Date().toISOString(),
+    ...(keyId ? { keyId } : {}),
   });
-  return { providerAccount, varName, status: "minted" };
+}
+
+/**
+ * The value-free DISCOVERY probe (PRD §4.5). Runs the provider's read-only GET with the
+ * root/grant to enumerate its scopable resources + the least-privilege permission menu —
+ * NAMES/ids + labels only, NEVER a secret. It walks the SAME gates as a mint (structural
+ * floor → sendWithRoot: allowlist, root-substitute, redirect refusal, scrub); a GET is not
+ * consequential, so it needs no human approval. Returns the value-free `MintChoices`, or a
+ * value-free `MintResult` when there's no spec, the probe fails, or nothing is discovered.
+ */
+export async function runDiscovery(
+  providerAccount: string,
+  rootOverride?: string,
+): Promise<MintChoices | MintResult> {
+  const spec = getDiscoverySpec(providerOf(providerAccount));
+  if (!spec) {
+    return {
+      providerAccount,
+      status: "rejected",
+      reason: `no discovery spec for ${providerOf(providerAccount)} — cannot run a guided mint`,
+    };
+  }
+  const probe: MintAction = {
+    providerAccount,
+    method: "GET",
+    url: spec.url,
+    headers: spec.headers,
+  };
+  // The structural floor still applies to the probe url (allowlist + header hygiene).
+  const rejected = structuralReject(probe);
+  if (rejected) return rejected;
+  // A `rootOverride` runs discovery against the human's SELECTED root (multi-root, deferred
+  // to approve time); otherwise the single stored root/grant, as at propose time.
+  const sent = await sendWithRoot(probe, rootOverride);
+  if ("error" in sent) return sent.error;
+  let body: unknown;
+  try {
+    body = await sent.res.json();
+  } catch {
+    return { providerAccount, status: "failed", reason: "discovery response was not JSON" };
+  }
+  // `listPath: ""` means the response body IS the array (e.g. GoDaddy `GET /v1/domains`
+  // returns a bare array, not a `{ data: [...] }` envelope) — pluck("") can't express that.
+  const list = spec.listPath === "" ? body : pluck(body, spec.listPath);
+  if (!Array.isArray(list)) {
+    return {
+      providerAccount,
+      status: "failed",
+      reason: `discovery: no resource list at '${spec.listPath}'`,
+    };
+  }
+  // Pull ONLY the id + name fields — never the raw resource object (value-free by construction).
+  const resources = list
+    .map((item) => ({
+      id: String(pluck(item, spec.idField) ?? ""),
+      name: String(pluck(item, spec.nameField) ?? pluck(item, spec.idField) ?? ""),
+    }))
+    .filter((r) => r.id !== "");
+  return {
+    resources,
+    permissions: spec.permissions,
+    // The narrowest permission is the SUGGESTED default (agent suggests, human confirms/edits).
+    suggestedPermission: spec.permissions[0] ?? "",
+    supportsExpiry: spec.supportsExpiry,
+  };
+}
+
+/** Substitute the guided placeholders ({{RESOURCE}}/{{PERMISSION}}/{{EXPIRY}}) throughout a
+ * JSON value (deep). An object key whose value is exactly `{{EXPIRY}}` is DROPPED when no
+ * expiry was selected (or the provider doesn't support it) so an unfilled placeholder never
+ * ships as a literal string. Headers are untouched here — they carry {{ROOT}} only. */
+function deepSubstitute(value: unknown, sel: MintSelection, withExpiry: boolean): unknown {
+  if (typeof value === "string") {
+    return value
+      .split(RESOURCE_PLACEHOLDER)
+      .join(sel.resource)
+      .split(PERMISSION_PLACEHOLDER)
+      .join(sel.permission)
+      .split(EXPIRY_PLACEHOLDER)
+      .join(withExpiry ? (sel.expiry ?? "") : "");
+  }
+  if (Array.isArray(value)) return value.map((v) => deepSubstitute(v, sel, withExpiry));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (!withExpiry && v === EXPIRY_PLACEHOLDER) continue; // drop an unfilled expiry field
+      out[k] = deepSubstitute(v, sel, withExpiry);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Validate + apply the human's selection to a parked guided-mint template. The selection is
+ * checked against the DISCOVERED options (a resource id that wasn't enumerated, or a
+ * permission outside the spec's menu, is refused) so a compromised dashboard can't scope a
+ * mint to an arbitrary resource/permission. On success, the {{RESOURCE}}/{{PERMISSION}}/
+ * {{EXPIRY}} placeholders are substituted into the url + body — the least-privilege scope
+ * baked in from the human's pick, not a blanket full_access authored by the agent.
+ */
+function applySelection(
+  action: MintAction,
+  selection: MintSelection | undefined,
+  choices: MintChoices,
+): { action: MintAction } | { reject: string } {
+  if (!selection)
+    return { reject: "a resource + permission selection is required for a guided mint" };
+  if (!choices.resources.some((r) => r.id === selection.resource)) {
+    return { reject: "selected resource is not one of the discovered options" };
+  }
+  if (!choices.permissions.includes(selection.permission)) {
+    return { reject: "selected permission is not one of the offered least-privilege options" };
+  }
+  const withExpiry = choices.supportsExpiry && !!selection.expiry;
+  return {
+    action: {
+      ...action,
+      url: action.url
+        .split(RESOURCE_PLACEHOLDER)
+        .join(selection.resource)
+        .split(PERMISSION_PLACEHOLDER)
+        .join(selection.permission)
+        .split(EXPIRY_PLACEHOLDER)
+        .join(withExpiry ? (selection.expiry ?? "") : ""),
+      ...(action.body !== undefined
+        ? { body: deepSubstitute(action.body, selection, withExpiry) }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -341,7 +592,10 @@ export async function executeMintAction(action: MintAction, opts: MintOpts): Pro
  * pending approvals (the agent just re-proposes), which is the correct fail-safe for a
  * security gate; persist them only if approvals must survive a crash.
  */
-const pendingMints = new Map<string, { action: MintAction; opts: MintOpts }>();
+const pendingMints = new Map<
+  string,
+  { action: MintAction; opts: MintOpts; choices?: MintChoices; rotate?: RotateAction }
+>();
 
 export interface ProposeResult {
   /** The value-free result handed to the AGENT — carries the public `id`, NEVER the nonce. */
@@ -368,16 +622,96 @@ export async function proposeMintAction(
     // Not a write → run it now, but never honor an agent-supplied confirm.
     return { result: await executeMintAction(action, { ...opts, confirmed: false }) };
   }
+  return parkConsequential(action, opts);
+}
+
+/**
+ * Park a consequential action under a fresh unforgeable nonce → the value-free `needs-confirm`
+ * for the agent + the `pending` (with the nonce) for the dashboard SSE. Shared by
+ * `proposeMintAction` and `proposeRotateAction`; `rotate` (when set) tags the parked entry so
+ * the human's one approval runs the whole rotation instead of a plain mint. The multi-root +
+ * guided-discovery choice logic runs on `action` (the mint template) exactly the same for both.
+ */
+async function parkConsequential(
+  action: MintAction,
+  opts: MintOpts,
+  rotate?: RotateAction,
+): Promise<ProposeResult> {
+  // MULTI-ROOT (PRD §4.4): when the provider holds >1 root the mint can't silently pick one —
+  // the human must choose WHICH via the value-free root menu. `resolveRoot` is ambiguous here
+  // (returns null), so discovery can't run yet; it's DEFERRED to approve time against the
+  // chosen root. Single/zero root → the existing guided path (discovery runs now).
+  const roots = listRootsFor(action.providerAccount);
+  const multiRoot = roots.length > 1;
+
+  // GUIDED least-privilege (PRD §4.5): a `discover`-flagged consequential mint runs the
+  // value-free discovery probe FIRST, then parks the discovered menu as `choices`. Discovery
+  // failing (no spec / probe error / nothing found) rejects the proposal — never park a mint
+  // whose {{RESOURCE}}/{{PERMISSION}} placeholders can't be filled.
+  let choices: MintChoices | undefined;
+  if (action.discover && !multiRoot) {
+    const disc = await runDiscovery(action.providerAccount);
+    if ("status" in disc) return { result: disc }; // a MintResult → discovery failed, don't park
+    if (disc.resources.length === 0) {
+      return {
+        result: {
+          providerAccount: action.providerAccount,
+          status: "failed",
+          reason: "discovery found no resources to scope this mint to",
+        },
+      };
+    }
+    choices = disc;
+  } else if (action.discover && multiRoot) {
+    // Defer resource discovery to approve time. Surface the spec-level permission menu + the
+    // roots to pick from NOW (permissions are root-independent); `resources` fill in once the
+    // human picks a root. Reject value-free if the provider has no spec (can't guide it).
+    const spec = getDiscoverySpec(providerOf(action.providerAccount));
+    if (!spec) {
+      return {
+        result: {
+          providerAccount: action.providerAccount,
+          status: "rejected",
+          reason: `no discovery spec for ${providerOf(action.providerAccount)} — cannot run a guided mint`,
+        },
+      };
+    }
+    choices = {
+      resources: [],
+      permissions: spec.permissions,
+      suggestedPermission: spec.permissions[0] ?? "",
+      supportsExpiry: spec.supportsExpiry,
+      roots,
+    };
+  } else if (multiRoot) {
+    // A consequential but NON-guided mint against a multi-root provider still needs the human
+    // to pick which root to spend — park just the root menu (no resource/permission steering).
+    choices = {
+      resources: [],
+      permissions: [],
+      suggestedPermission: "",
+      supportsExpiry: false,
+      roots,
+    };
+  }
   const id = randomBytes(6).toString("hex");
   const nonce = randomBytes(24).toString("hex");
-  pendingMints.set(nonce, { action, opts });
+  pendingMints.set(nonce, {
+    action,
+    opts,
+    ...(choices ? { choices } : {}),
+    ...(rotate ? { rotate } : {}),
+  });
+  const verb = rotate ? "rotate" : (action.danger ?? action.method);
   const pending: PendingMint = {
     id,
     nonce,
     providerAccount: action.providerAccount,
     method: action.method,
     danger: action.danger,
-    varName: action.extract?.varName,
+    varName: rotate ? rotate.varName : action.extract?.varName,
+    ...(choices ? { choices } : {}),
+    ...(rotate ? { rotate: true } : {}),
   };
   return {
     pending,
@@ -385,7 +719,7 @@ export async function proposeMintAction(
       providerAccount: action.providerAccount,
       status: "needs-confirm",
       id,
-      reason: `human approval required (${action.danger ?? action.method}) — approve in the dashboard`,
+      reason: `human approval required (${verb}) — approve in the dashboard`,
     },
   };
 }
@@ -395,12 +729,598 @@ export async function proposeMintAction(
  * agent never received the nonce, so it cannot forge this. An unknown or already-used
  * nonce is rejected (never executes). On a hit the parked action runs with the ONE
  * `confirmed:true` the system ever sets.
+ *
+ * GUIDED mints (PRD §4.5) also carry the human's `selection` — the daemon validates it
+ * against the discovered options and substitutes {{RESOURCE}}/{{PERMISSION}}/{{EXPIRY}}
+ * into the action BEFORE executing, so the minted key is scoped to exactly what the human
+ * chose (least-privilege), never the blanket permission the agent might have authored.
  */
-export async function approveMintAction(nonce: string): Promise<MintResult> {
+export async function approveMintAction(
+  nonce: string,
+  selection?: MintSelection,
+): Promise<MintResult> {
   const parked = nonce ? pendingMints.get(nonce) : undefined;
   if (!parked) {
     return { providerAccount: "", status: "rejected", reason: "unknown or already-used approval" };
   }
   pendingMints.delete(nonce);
-  return executeMintAction(parked.action, { ...parked.opts, confirmed: true });
+  let action = parked.action;
+  const reject = (reason: string): MintResult => ({
+    providerAccount: action.providerAccount,
+    status: "rejected",
+    reason,
+  });
+
+  // MULTI-ROOT (PRD §4.4): the parked choice offered >1 root → a root selection is REQUIRED and
+  // validated against the enumerated ids (a compromised dashboard can't inject an arbitrary
+  // root — same "must match an offered option" guard as the resource/permission pick). The
+  // daemon resolves the VALUE by the chosen id and spends exactly that root.
+  let rootValue: string | undefined;
+  const rootChoices = parked.choices?.roots;
+  if (rootChoices && rootChoices.length > 0) {
+    if (!selection?.rootId) {
+      return reject("a root selection is required — this provider holds multiple roots");
+    }
+    if (!rootChoices.some((r) => r.id === selection.rootId)) {
+      return reject("selected root is not one of the offered roots");
+    }
+    const resolved = resolveRootById(selection.rootId);
+    if (!resolved) return reject("selected root is no longer available");
+    rootValue = resolved;
+  }
+
+  // GUIDED (discover) mint: run discovery against the CHOSEN root when multi-root (deferred
+  // from propose), else use the choices discovered at propose (single-root). Then validate the
+  // resource/permission pick + substitute the least-privilege placeholders.
+  if (parked.action.discover) {
+    let choices = parked.choices;
+    if (rootValue) {
+      const disc = await runDiscovery(action.providerAccount, rootValue);
+      if ("status" in disc) return disc; // discovery against the chosen root failed → value-free
+      choices = disc;
+    }
+    if (!choices) return reject("guided mint lost its discovered choices");
+    const applied = applySelection(action, selection, choices);
+    if ("reject" in applied) return reject(applied.reject);
+    action = applied.action;
+  }
+
+  // ROTATION (PRD Phase 2): the parked entry is a rotation — the human's ONE approval runs the
+  // whole atomic rotate. `action` is now the (optionally guided/root-scoped) NEW-key mint; feed
+  // it plus the revoke template into the state machine. All value handling stays daemon-local.
+  if (parked.rotate) {
+    return runRotationApproved({ ...parked.rotate, mint: action }, parked.opts, rootValue);
+  }
+
+  return executeMintAction(action, { ...parked.opts, confirmed: true, rootValue });
+}
+
+// ── ROTATION (PRD Phase 2): mint-new → reconfigure → revoke-old, with safe rollback ─────────
+
+const OLD_KEY_ID_PLACEHOLDER = "{{OLD_KEY_ID}}";
+
+/**
+ * A ROTATION the agent authors: swap the key filed under `varName` for a fresh one, then revoke
+ * the old. `mint` is a normal scoped/guided mint template (its `extract.varName` MUST equal
+ * `varName`, `extract.idPath` SHOULD name the new key's id). `revoke` is the old-key delete —
+ * its url/body may carry `{{OLD_KEY_ID}}` (filled daemon-side from the stored old key id) and
+ * its headers carry `{{ROOT}}`. Both are consequential; the human's ONE approval covers both.
+ */
+export const RotateActionSchema = z.object({
+  varName: z.string().min(1),
+  mint: MintActionSchema,
+  revoke: MintActionSchema,
+});
+export type RotateAction = z.infer<typeof RotateActionSchema>;
+
+/** Substitute the stored OLD key id into the revoke action's url + body (headers carry {{ROOT}}). */
+function fillOldKeyId(action: MintAction, oldKeyId: string): MintAction {
+  const sub = (s: string): string => s.split(OLD_KEY_ID_PLACEHOLDER).join(oldKeyId);
+  const subDeep = (v: unknown): unknown =>
+    typeof v === "string"
+      ? sub(v)
+      : Array.isArray(v)
+        ? v.map(subDeep)
+        : v && typeof v === "object"
+          ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, subDeep(x)]))
+          : v;
+  return {
+    ...action,
+    url: sub(action.url),
+    ...(action.body !== undefined ? { body: subDeep(action.body) } : {}),
+  };
+}
+
+/**
+ * The agent PROPOSES a rotation (the MCP `rotateKey` entry). A rotation is inherently
+ * consequential (it mints AND revokes with the root key), so it is ALWAYS parked for a human —
+ * never auto-run. Both the mint + revoke templates pass the structural floor up front, and the
+ * mint must extract into `varName` (so the new key overwrites the old under the same name).
+ */
+export async function proposeRotateAction(
+  rotate: RotateAction,
+  opts: MintOpts,
+): Promise<ProposeResult> {
+  for (const a of [rotate.mint, rotate.revoke]) {
+    const r = structuralReject(a);
+    if (r) return { result: r };
+  }
+  if (!rotate.mint.extract || rotate.mint.extract.varName !== rotate.varName) {
+    return {
+      result: {
+        providerAccount: rotate.mint.providerAccount,
+        status: "rejected",
+        reason: `rotate.mint must extract into '${rotate.varName}' (the var being rotated)`,
+      },
+    };
+  }
+  return parkConsequential(rotate.mint, opts, rotate);
+}
+
+/**
+ * Build the daemon-local rotation effects for an APPROVED rotation, then run the state machine.
+ * The value adapter: the OLD value + minted NEW value live ONLY in this closure — the pure
+ * `runRotation` orchestrator (and everything it returns) is value-free. Records the outcome to
+ * the value-free audit log. `mint` here is the already-scoped/root-selected NEW-key mint.
+ */
+async function runRotationApproved(
+  rotate: RotateAction,
+  opts: MintOpts,
+  rootValue: string | undefined,
+): Promise<MintResult> {
+  const { varName } = rotate;
+  const providerAccount = rotate.mint.providerAccount;
+  const provenance = auditName(opts.repoName, opts.env, providerAccount);
+
+  // Read the OLD value (to restore on abort) + the OLD key id (to revoke) — daemon-local.
+  const [oldHit] = discoverCredentials([varName], { envLocalPath: opts.envLocalPath });
+  const oldValue = oldHit?.value;
+  const oldKeyId = readStore().credentials[varName]?.keyId;
+  if (!oldValue) {
+    return {
+      providerAccount,
+      varName,
+      status: "failed",
+      reason: `no current ${varName} to rotate`,
+    };
+  }
+
+  let newValue: string | undefined;
+  let newKeyId: string | undefined;
+
+  const fx: RotationEffects = {
+    varName,
+    ...(oldKeyId ? { oldKeyId } : {}),
+    // minting — mint the new key at the provider; hold the value in this closure.
+    async mintNew() {
+      const sent = await sendWithRoot(rotate.mint, rootValue);
+      if ("error" in sent) return { ok: false, reason: sent.error.reason ?? "mint failed" };
+      let body: unknown;
+      try {
+        body = await sent.res.json();
+      } catch {
+        return { ok: false, reason: "mint response was not JSON" };
+      }
+      const v = pluck(body, rotate.mint.extract!.path);
+      if (v === undefined || v === null || v === "") {
+        return { ok: false, reason: `minted value not found at '${rotate.mint.extract!.path}'` };
+      }
+      newValue = String(v);
+      newKeyId = rotate.mint.extract!.idPath
+        ? extractKeyId(body, rotate.mint.extract!.idPath)
+        : undefined;
+      return { ok: true, ...(newKeyId ? { newKeyId } : {}) };
+    },
+    // reconfiguring — switch the sink + vault to the new key (old value stays recoverable).
+    async reconfigure() {
+      try {
+        await syncCredential(varName, newValue!, {
+          env: opts.env,
+          envLocalPath: opts.envLocalPath,
+        });
+        putCredential(varName, {
+          value: newValue!,
+          provider: provenance,
+          updatedAt: new Date().toISOString(),
+          ...(newKeyId ? { keyId: newKeyId } : {}),
+        });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message };
+      }
+    },
+    // revoking — DELETE the old key by id at the provider (already human-approved → confirmed).
+    async revokeOld() {
+      const revoke = fillOldKeyId(rotate.revoke, oldKeyId!);
+      const r = await executeMintAction(revoke, { ...opts, confirmed: true, rootValue });
+      return r.status === "ok" || r.status === "reused"
+        ? { ok: true }
+        : { ok: false, reason: r.reason ?? r.status };
+    },
+    // abort — roll the sink + vault back to the old (working) key.
+    async restore() {
+      await syncCredential(varName, oldValue, { env: opts.env, envLocalPath: opts.envLocalPath });
+      putCredential(varName, {
+        value: oldValue,
+        provider: provenance,
+        updatedAt: new Date().toISOString(),
+        ...(oldKeyId ? { keyId: oldKeyId } : {}),
+      });
+    },
+  };
+
+  const outcome = await runRotation(fx);
+  appendRotation({
+    varName: outcome.varName,
+    provider: providerOf(providerAccount),
+    ...(outcome.oldKeyId ? { oldKeyId: outcome.oldKeyId } : {}),
+    ...(outcome.newKeyId ? { newKeyId: outcome.newKeyId } : {}),
+    outcome:
+      outcome.state === "done" ? "done" : outcome.state === "partial" ? "partial" : "aborted",
+    ...(outcome.reason ? { reason: outcome.reason } : {}),
+    ts: new Date().toISOString(),
+  });
+  return rotationResult(outcome, providerAccount);
+}
+
+/** Map a value-free RotationOutcome → the MintResult the approve path returns. `done` → minted
+ * (new key live), `partial` → partial (live but old NOT revoked — revoke manually), else failed. */
+function rotationResult(o: RotationOutcome, providerAccount: string): MintResult {
+  const status: MintResult["status"] =
+    o.state === "done" ? "minted" : o.state === "partial" ? "partial" : "failed";
+  return { providerAccount, varName: o.varName, status, ...(o.reason ? { reason: o.reason } : {}) };
+}
+
+// ── BATCH PROVISION (the North Star): one approval provisions the whole project ──────────────
+//
+// "A new project provisions itself." The agent authors ONE batch of mint/wire actions (one per
+// self-provisioning var, from the connected roots) + hands the project's full var list; the
+// daemon parks the WHOLE batch under a SINGLE unforgeable nonce ("provision these N keys for
+// <project>?"), and on the human's ONE approval runs each through the SAME executeMintAction gate
+// (allowlist → root-substitute → sink) — no fork of the mint path. Partial success is fine; each
+// var reports its own value-free result. The vars NOT in the batch are classified by the value-
+// free planner (planProvision) so the human sees the whole picture: mint · needs-root · guided · skip.
+//
+// ponytail: a separate `pendingBatches` Map beside `pendingMints` — a batch is N-actions-under-1-
+// nonce, structurally distinct from a single parked mint. Same fail-safe (a restart drops pending
+// approvals; the agent re-proposes). Upgrade path: persist if approvals must survive a crash.
+
+const pendingBatches = new Map<string, { items: MintAction[]; opts: MintOpts; project?: string }>();
+
+/** The agent's batch proposal: the self-provisioning actions + the project's full var list. */
+export interface ProvisionProposeInput {
+  /** Agent-authored mint / wire actions — one per var that self-provisions THIS run (mint-from-
+   * root). A mint carries `extract.varName`; a wire action (e.g. GoDaddy set-nameservers) has no
+   * `extract`. All are executed under the SINGLE approval. */
+  mints: MintAction[];
+  /** Every env-var the project's `.env.example` declares — drives the plan for the vars NOT minted. */
+  vars: string[];
+  project?: string;
+}
+
+/** The value-free proposal result: what's parked under the one approval + the plan for the rest. */
+export interface ProvisionProposeResult {
+  result: {
+    status: "needs-confirm" | "rejected" | "ok";
+    id?: string;
+    reason?: string;
+    /** The vars being minted/wired under this ONE approval — NAMES + provider + method, no value. */
+    parked: Array<{ varName?: string; providerAccount: string; method: string }>;
+    /** The plan for the vars NOT covered by a parked action (needs-root / guided-paste / skip). */
+    plan: ProvisionItem[];
+    /** How many actions this one approval covers. */
+    count: number;
+  };
+  /** Present only when parked: the SSE card for the dashboard (nonce dashboard-only, never the agent). */
+  pending?: PendingMint;
+}
+
+/**
+ * PROPOSE a whole-project provision (the `provisionProject` MCP entry). Structurally-doomed
+ * actions (bad host / control-char header) reject the WHOLE batch up front — never park garbage
+ * for a human to approve. The mintable vars are parked under ONE nonce; the rest are classified
+ * by the value-free planner. Nothing executes here — a human approves the one nonce via
+ * `POST /api/action`, and the agent never receives the nonce (it rides the SSE snapshot only).
+ */
+export async function proposeProvision(
+  input: ProvisionProposeInput,
+  opts: MintOpts,
+): Promise<ProvisionProposeResult> {
+  // Reject a structurally-doomed batch before parking anything (allowlist + header hygiene).
+  for (const a of input.mints) {
+    const rejected = structuralReject(a);
+    if (rejected) {
+      return {
+        result: {
+          status: "rejected",
+          reason: `${a.providerAccount}: ${rejected.reason}`,
+          parked: [],
+          plan: [],
+          count: 0,
+        },
+      };
+    }
+  }
+
+  // The vars covered by a parked mint don't need a plan classification — plan only the rest.
+  const mintedVars = new Set(
+    input.mints.map((m) => m.extract?.varName).filter((v): v is string => Boolean(v)),
+  );
+  const plan = planProvision({
+    vars: input.vars.filter((v) => !mintedVars.has(v)),
+    roots: listRoots(),
+    grants: listConnectedProviders(),
+    browserMode: getEnv().RINGTAIL_BROWSER_MODE,
+    ...(input.project ? { project: input.project } : {}),
+  });
+  const parked = input.mints.map((m) => ({
+    ...(m.extract?.varName ? { varName: m.extract.varName } : {}),
+    providerAccount: m.providerAccount,
+    method: m.method,
+  }));
+
+  // Nothing to mint → no approval needed; hand back the plan so the human connects roots / pastes.
+  if (input.mints.length === 0) {
+    return {
+      result: {
+        status: "ok",
+        reason: "nothing to mint from your connected roots — connect roots / paste the rest",
+        parked,
+        plan: plan.items,
+        count: 0,
+      },
+    };
+  }
+
+  const id = randomBytes(6).toString("hex");
+  const nonce = randomBytes(24).toString("hex");
+  pendingBatches.set(nonce, {
+    items: input.mints,
+    opts,
+    ...(input.project ? { project: input.project } : {}),
+  });
+  const pending: PendingMint = {
+    id,
+    nonce,
+    providerAccount: input.mints[0]?.providerAccount ?? "",
+    method: "BATCH",
+    danger: "confirm",
+    batch: true,
+    count: input.mints.length,
+    ...(parked[0]?.varName ? { varName: parked[0].varName } : {}),
+  };
+  return {
+    result: {
+      status: "needs-confirm",
+      id,
+      reason: `human approval required — provision ${input.mints.length} key(s)${
+        input.project ? ` for ${input.project}` : ""
+      }`,
+      parked,
+      plan: plan.items,
+      count: input.mints.length,
+    },
+    pending,
+  };
+}
+
+/** One batch execution outcome — a value-free MintResult per parked action. */
+export interface ProvisionApproveResult {
+  results: MintResult[];
+}
+
+/**
+ * The HUMAN approves the whole batch by posting its server nonce (dashboard-only). Every parked
+ * action runs through the SAME `executeMintAction` gate with the ONE `confirmed:true` the system
+ * sets — mint keys land in the sink, wire actions (no extract) succeed as `ok`. Partial success is
+ * expected: a var whose provider holds multiple roots without a `rootSelections` pick comes back
+ * `no-root` (executeMintAction's own ambiguity guard) rather than silently picking one. Value-free
+ * throughout — each result is names + status, never a secret.
+ */
+export async function approveProvision(
+  nonce: string,
+  /** Optional MULTI-ROOT picks (varName → chosen root id) for a var whose provider holds >1 root.
+   * Validated against that provider's connected roots so a compromised dashboard can't inject an
+   * arbitrary (other-provider) root value into this provider's allowlisted call. */
+  rootSelections?: Record<string, string>,
+): Promise<ProvisionApproveResult | { rejected: string }> {
+  const parked = nonce ? pendingBatches.get(nonce) : undefined;
+  if (!parked) return { rejected: "unknown or already-used approval" };
+  pendingBatches.delete(nonce);
+
+  const results: MintResult[] = [];
+  for (const action of parked.items) {
+    const varName = action.extract?.varName;
+    const pickId = varName ? rootSelections?.[varName] : undefined;
+    let rootValue: string | undefined;
+    if (pickId) {
+      // The pick MUST be one of this provider's connected roots (same guard as approveMintAction).
+      if (!listRootsFor(action.providerAccount).some((r) => r.id === pickId)) {
+        results.push({
+          providerAccount: action.providerAccount,
+          ...(varName ? { varName } : {}),
+          status: "rejected",
+          reason: "selected root is not one of the connected roots for this provider",
+        });
+        continue;
+      }
+      rootValue = resolveRootById(pickId) ?? undefined;
+    }
+    results.push(
+      await executeMintAction(action, {
+        ...parked.opts,
+        confirmed: true,
+        ...(rootValue ? { rootValue } : {}),
+      }),
+    );
+  }
+  return { results };
+}
+
+/** Is `nonce` a parked BATCH (vs a single parked mint)? Lets the daemon route the approve. */
+export function isBatchNonce(nonce: string): boolean {
+  return pendingBatches.has(nonce);
+}
+
+// ── BROWSER MINT (Envoyage): the no-mint-API path — drive the provider's web console ─────────
+//
+// The LAST resort in the planner: reached ONLY when a var has no API recipe but a browser recipe
+// can drive its dashboard (provision.ts classifies it `mint-via-browser`). It does NOT author an
+// HTTP action and spends NO {{ROOT}} — it drives a browser session that returns a raw minted
+// value, then closes the loop through the SAME `fileMinted` (validate + sink) an API mint uses.
+// A browser mint CREATES a real credential and needs a human at the live console, so it is ALWAYS
+// consequential: parked under an unforgeable nonce, never auto-run. `ponytail: a dedicated
+// pendingBrowserMints Map beside pendingMints/pendingBatches — a browser mint is provider+var, not
+// an HTTP MintAction, so a separate map is cleaner than a fake action. Same fail-safe (a restart
+// drops pending approvals; the agent re-proposes).`
+
+const pendingBrowserMints = new Map<
+  string,
+  { provider: string; varName: string; opts: MintOpts }
+>();
+
+/** Is `nonce` a parked BROWSER mint? Lets the daemon route the approve to approveMintViaBrowser. */
+export function isBrowserNonce(nonce: string): boolean {
+  return pendingBrowserMints.has(nonce);
+}
+
+/** Injectable deps for a browser mint — the mock swaps `connect` for a scripted MockEnvoyage (NO
+ * real browser); `onState` narrates the handoff to the cockpit. Real runs default to
+ * connectBrowserMinter (local Envoyage in OSS / the CF-CDP direct driver in cloud). */
+export interface BrowserMintDeps {
+  connect?: () => Promise<BrowserMinter>;
+  onState?: (s: HandoffState, ctx?: { reason?: string }) => void;
+  /** Rocco-voice narration → the cockpit's SSE action bubbles (Increment 2). `handoff` marks the
+   * orange "your turn" bubble. Value-free (see envoyage.ts::stepLabel). */
+  onNarrate?: (text: string, handoff?: boolean) => void;
+}
+
+/**
+ * PROPOSE a browser mint (the MCP `mintViaBrowser` entry). ALWAYS consequential — parked under a
+ * fresh unforgeable nonce and returned as `needs-confirm`; the agent never receives the nonce, so
+ * it can't self-approve. Rejects value-free when no browser recipe drives this var (the classifier
+ * already gated this; this is the structural floor). NOTHING executes here.
+ */
+export async function proposeMintViaBrowser(
+  provider: string,
+  varName: string,
+  opts: MintOpts,
+): Promise<ProposeResult> {
+  const recipe = browserRecipeFor(varName);
+  if (!recipe || recipe.provider !== provider) {
+    return {
+      result: {
+        providerAccount: provider,
+        status: "rejected",
+        reason: `no browser recipe drives ${varName}`,
+      },
+    };
+  }
+  const id = randomBytes(6).toString("hex");
+  const nonce = randomBytes(24).toString("hex");
+  pendingBrowserMints.set(nonce, { provider, varName, opts });
+  const pending: PendingMint = {
+    id,
+    nonce,
+    providerAccount: provider,
+    method: "BROWSER",
+    danger: "confirm",
+    varName,
+    browser: true,
+  };
+  return {
+    pending,
+    result: {
+      providerAccount: provider,
+      status: "needs-confirm",
+      id,
+      reason:
+        "human approval required (browser mint) — approve, then solve any login in the live view",
+    },
+  };
+}
+
+/**
+ * The HUMAN approves a parked browser mint by its server nonce (dashboard-only, unforgeable). On
+ * a hit the daemon runs the whole browser mint LOCALLY. An unknown/already-used nonce is rejected.
+ */
+export async function approveMintViaBrowser(
+  nonce: string,
+  deps: BrowserMintDeps = {},
+): Promise<MintResult> {
+  const parked = nonce ? pendingBrowserMints.get(nonce) : undefined;
+  if (!parked) {
+    return { providerAccount: "", status: "rejected", reason: "unknown or already-used approval" };
+  }
+  pendingBrowserMints.delete(nonce);
+  return executeBrowserMint(parked.provider, parked.varName, parked.opts, deps);
+}
+
+/**
+ * Run one browser mint end-to-end — the SIBLING of sendWithRoot for the no-mint-API path. Drives
+ * the provider's web console (Envoyage over HTTP-streaming MCP), gating on the handoff state
+ * machine so the human types any password/OTP in the LIVE VIEW (the agent is structurally blind),
+ * captures the minted value DAEMON-LOCAL, VALIDATES scopes when a recipe offers a probe, then
+ * closes the loop through the SAME `fileMinted` (sink + vault) an API mint uses. Reuses gate 3
+ * (idempotency) too — a var already on disk is reused, no browser spun up. NEVER returns a value.
+ */
+export async function executeBrowserMint(
+  provider: string,
+  varName: string,
+  opts: MintOpts,
+  deps: BrowserMintDeps = {},
+): Promise<MintResult> {
+  const recipe = browserRecipeFor(varName);
+  if (!recipe || recipe.provider !== provider) {
+    return {
+      providerAccount: provider,
+      status: "rejected",
+      reason: `no browser recipe drives ${varName}`,
+    };
+  }
+  // 3. idempotency — a key already provisioned FOR THIS PROJECT is reused, not re-minted (mirrors
+  //    executeMintAction) — no browser session spun up for a var already on disk.
+  if (readProjectEnvLocal(varName, opts.envLocalPath)) {
+    return {
+      providerAccount: provider,
+      varName,
+      status: "reused",
+      reason: `${varName} already provisioned (.env.local) — reused, not re-minted`,
+    };
+  }
+  const connect = deps.connect ?? connectBrowserMinter;
+  let client: BrowserMinter;
+  try {
+    client = await connect();
+  } catch (err) {
+    return {
+      providerAccount: provider,
+      status: "failed",
+      reason: `could not start the browser: ${(err as Error).message}`,
+    };
+  }
+  try {
+    const driven = await driveBrowserMint(client, recipe, deps.onState, deps.onNarrate);
+    if ("error" in driven)
+      return { providerAccount: provider, status: "failed", reason: driven.error };
+    // Validate-after-mint when the provider offers a probe (best-effort: a pure dashboard-only
+    // provider has no recipe → skipped, the loop still closes via the sink). `missing[]` drives the
+    // same wrong-scope status as an API mint.
+    const rec = getRecipe(provider);
+    if (rec?.validate) {
+      const v = await rec.validate({ [varName]: driven.value });
+      if (!v.ok) {
+        return {
+          providerAccount: provider,
+          varName,
+          status: "wrong-scope",
+          reason: v.detail ?? `missing scope(s): ${(v.missing ?? []).join(", ")}`,
+        };
+      }
+    }
+    await fileMinted(varName, driven.value, opts, provider, driven.keyId);
+    return { providerAccount: provider, varName, status: "minted" };
+  } finally {
+    await client.close();
+  }
 }

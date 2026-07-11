@@ -9,12 +9,19 @@ import {
   ChatChoiceSchema,
   GRID_ENVS,
   type GridEnv,
+  listConnectors,
   type MintAction,
   MintActionSchema,
   proposeMintAction,
+  proposeMintViaBrowser,
+  proposeProvision,
+  proposeRotateAction,
+  type RotateAction,
+  RotateActionSchema,
   type Wizard,
   WizardSchema,
 } from "@ringtail/core";
+import { listConnectedProviders } from "@ringtail/store";
 import { z } from "zod";
 import { runAction, runEngine } from "./action";
 import { applyStep } from "./submit";
@@ -339,6 +346,132 @@ export function buildMcpServer(
       if (result.status === "minted") store.markMinted(result.providerAccount, env ?? "local");
       return ok({ ...result, pendingUserMessages: store.drainInbox() });
     },
+  );
+
+  // rotateKey(rotate, env?) → ROTATE a credential (PRD Phase 2). The agent authors
+  // `{ varName, mint, revoke }`: `mint` is a fresh scoped-key mint template (reuses the guided/
+  // multi-root mint machinery — its extract fills `varName`, its `extract.idPath` names the new
+  // key's id); `revoke` is the OLD-key delete (its url/body may carry {{OLD_KEY_ID}}, filled
+  // daemon-side from the stored old key id; headers carry {{ROOT}}). A rotation is inherently
+  // consequential (mint AND revoke spend the root key), so it comes back `needs-confirm` and is
+  // parked under an unforgeable nonce — the agent can never self-approve. When the HUMAN approves
+  // the nonce (POST /api/action), the daemon runs the whole atomic rotate LOCALLY:
+  //   mint-new → reconfigure the sink → (optional validate) → revoke-old,
+  // with SAFE rollback (mint/sink fail → abort + restore the old key, no revoke; revoke fail →
+  // `partial`: new key live, "revoke the old one manually"). Returns names + status only, NEVER a
+  // value (old or minted) — the whole rotation is daemon-local.
+  tool<{ rotate: RotateAction; env?: GridEnv }>(
+    server,
+    "rotateKey",
+    {
+      description:
+        "Rotate a credential: mint a fresh scoped key, switch the sink to it, then revoke the old key — as one human-approved, atomic operation with safe rollback. The agent authors { varName, mint, revoke }; a rotation is consequential so it comes back needs-confirm and is parked for a human (the agent cannot self-approve). On failure it rolls back to the old working key (abort) or reports the old key must be revoked manually (partial). Never returns a secret value (old or minted).",
+      inputSchema: { rotate: RotateActionSchema, env: GRID_ENV.optional() },
+    },
+    async ({ rotate, env }) => {
+      const project = store.snapshot().project;
+      const { result, pending } = await proposeRotateAction(rotate, {
+        ...engineOpts,
+        ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+        env: env ?? "local",
+      });
+      if (pending) store.addPendingMint(pending);
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // mintViaBrowser(provider, varName, env?) → BROWSER MINT (Envoyage), the no-mint-API path. For a
+  // DASHBOARD-ONLY provider (no management API to mint a token), the daemon drives the provider's
+  // web console with a real browser to create + read back the key. It drives HEADLESS and STOPS at
+  // any genuine human wall (login / CAPTCHA / OTP): the human solves it in the LIVE VIEW — the
+  // agent is STRUCTURALLY blind to the password (Envoyage blanks the screenshot on a password
+  // page). A browser mint creates a real credential, so it is consequential: it comes back
+  // needs-confirm and is parked under an unforgeable nonce — the agent cannot self-approve. On the
+  // human's approval the daemon drives the mint locally and closes the loop through the SAME
+  // validate + sink as an API mint. The minted value never leaves the daemon; only the var NAME +
+  // status come back. OFF unless RINGTAIL_BROWSER_MODE is local|cloud.
+  tool<{ provider: string; varName: string; env?: GridEnv }>(
+    server,
+    "mintViaBrowser",
+    {
+      description:
+        "Mint a credential for a DASHBOARD-ONLY provider (no mint-API) by driving its web console with a browser (Envoyage). Ringtail drives headless and stops at any human wall (login/CAPTCHA/OTP) — the human solves it in the live view; the agent never sees the password. Consequential: comes back needs-confirm and is parked for a human to approve (the agent cannot self-approve). On approval the daemon drives the mint locally and files the key through the same validate + sink as an API mint. Never returns a secret value.",
+      inputSchema: {
+        provider: z.string().min(1),
+        varName: z.string().min(1),
+        env: GRID_ENV.optional(),
+      },
+    },
+    async ({ provider, varName, env }) => {
+      const project = store.snapshot().project;
+      const { result, pending } = await proposeMintViaBrowser(provider, varName, {
+        ...engineOpts,
+        ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+        env: env ?? "local",
+      });
+      if (pending) store.addPendingMint(pending);
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // provisionProject(mints, vars?, env?) → THE BATCH ORCHESTRATOR (the North Star). "A new
+  // project provisions itself." The agent authors ONE batch of mint/wire actions — one per var
+  // that self-provisions from a connected root (each a normal mintKey template: a {{ROOT}} mint
+  // with `extract`, or a wire action like GoDaddy set-nameservers with no `extract`) — plus the
+  // project's full `vars` list (defaults to the grid's). The daemon parks the WHOLE batch under a
+  // SINGLE unforgeable nonce ("provision these N keys for <project>?"), and classifies the vars
+  // NOT in the batch with the value-free planner: mint-from-root · needs-root · guided-paste ·
+  // skip (a non-secret resource like DATABASE_URL is flagged, never faked). It returns
+  // needs-confirm + the value-free plan + the parked list — NEVER a value. On the human's ONE
+  // approval (POST /api/action with the nonce) every action runs through the same mint gate; each
+  // var reports its own value-free result (minted / ok / no-root / failed). The agent can never
+  // self-approve (it never receives the nonce). A structurally-doomed action rejects the batch up
+  // front rather than nagging a human to approve garbage.
+  tool<{ mints: MintAction[]; vars?: string[]; env?: GridEnv }>(
+    server,
+    "provisionProject",
+    {
+      description:
+        "Provision a whole project from your connected roots under ONE human approval. The agent authors a batch of mint/wire actions (one per self-provisioning var) + the project's var list; the daemon parks the whole batch under a single nonce and classifies the rest (mint-from-root / needs-root / guided-paste / skip). Returns needs-confirm + the value-free plan, never a value. A human approves the one nonce in the dashboard — the agent cannot self-approve.",
+      inputSchema: {
+        mints: z.array(MintActionSchema),
+        vars: z.array(z.string()).optional(),
+        env: GRID_ENV.optional(),
+      },
+    },
+    async ({ mints, vars, env }) => {
+      const snap = store.snapshot();
+      const project = snap.project;
+      // Default the var list to the ACTIVE project's grid (built from its `.env.example`).
+      const varList = vars ?? snap.grid.flatMap((r) => r.envVars);
+      const { result, pending } = await proposeProvision(
+        { mints, vars: varList, ...(project ? { project: project.name } : {}) },
+        {
+          ...engineOpts,
+          ...(project ? { envLocalPath: join(project.path, ".env.local") } : {}),
+          env: env ?? "local",
+        },
+      );
+      // Park the batch → its nonce rides the SSE snapshot to the dashboard (never the agent).
+      if (pending) store.addPendingMint(pending);
+      return ok({ ...result, pendingUserMessages: store.drainInbox() });
+    },
+  );
+
+  // listConnectors() → the agent-guided onboarding surface (PRD §4.9). The agent can
+  // see which providers support the OAuth "Connect" flow, which are already connected,
+  // which still need client credentials, and the signup / api-keys URLs to send the user
+  // to. VALUE-FREE: names + urls + scopes + booleans only — never a token. The dashboard
+  // drives the actual connect (POST /api/connect/start opens the authorizeUrl); this just
+  // lets the agent say "sign up / connect here".
+  tool(
+    server,
+    "listConnectors",
+    {
+      description:
+        "List the OAuth providers the user can connect (PRD §4.9): id, connected?, needsClientCreds?, scopes, and signup / api-keys URLs to guide the user. Also returns already-connected providers (names + scopes + expiry). Never returns a token.",
+    },
+    async () => ok({ connectors: listConnectors(), connected: listConnectedProviders() }),
   );
 
   return server;

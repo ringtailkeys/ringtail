@@ -51,6 +51,55 @@ value** — that is enforced by `check:no-leak`.
   human confirms out-of-band. Returns `{ providerAccount, varName?, status, reason? }` — **never a
   value** (root or minted; any reflected secret is scrubbed from `reason`). The root key itself is
   pasted by the user via `POST /api/root`, never through the agent.
+- **`provisionProject(mints, vars?, env?)`** — **the batch orchestrator** (the repetition-killer).
+  *A new project provisions itself.* The agent authors **one batch** of mint/wire actions — one per
+  var that self-provisions from a connected root (each a normal [`mintKey`](#complete--execute)
+  template: a `{{ROOT}}` mint with `extract`, or a wire action like GoDaddy set-nameservers with no
+  `extract`) — plus the project's full `vars` list (defaults to the active grid). The daemon parks
+  the **whole batch under a single unforgeable nonce** ("provision these N keys for &lt;project&gt;?")
+  and classifies the vars **not** in the batch with the value-free planner into four buckets:
+  **`mint-from-root`** (a connected root + a recipe exist), **`needs-root`** (a recipe but no root —
+  connect it once, then it self-provisions), **`guided-paste`** (no recipe — paste it by hand), and
+  **`skip`** (a non-secret provisioned *resource* like `DATABASE_URL` — needs a resource, not a key;
+  flagged, never faked). It returns `needs-confirm` + the value-free plan + the parked list — **never
+  a value**. On the human's **one** approval (`POST /api/action` with the nonce) every action runs
+  through the **same** mint gate; each var reports its own value-free result (`minted` / `ok` /
+  `no-root` / `failed`). Partial success is fine. The agent can never self-approve (it never receives
+  the nonce), and a structurally-doomed action rejects the whole batch up front.
+- **`rotateKey(rotate, env?)`** — **rotate a credential** (mint a fresh scoped key → switch the
+  sink to it → revoke the old key) as **one human-approved, atomic operation with safe rollback**.
+  The agent authors `{ varName, mint, revoke }`: `mint` is a normal scoped/guided
+  [`mintKey`](#complete--execute) template (its `extract.varName` must equal `varName`; its
+  `extract.idPath` names the new key's id), and `revoke` is the old-key delete — its url/body may
+  carry `{{OLD_KEY_ID}}` (filled daemon-side from the stored old key id) and its headers carry
+  `{{ROOT}}`. A rotation is inherently consequential (it mints **and** revokes with the root key),
+  so it comes back `needs-confirm` and is parked under an unforgeable nonce — the agent can never
+  self-approve. On the human's one approval the daemon runs the whole rotation **locally**:
+  **mint-new → reconfigure the sink → (optional validate) → revoke-old**, with safe rollback —
+  if mint or the sink write fails it **aborts and restores the old working key** (never revoking),
+  and if the revoke fails after the sink switched it returns **`partial`** (new key live, "revoke
+  the old one manually"). Returns names + status only — **never a value** (old or minted).
+- **`mintViaBrowser(provider, varName, env?)`** — **browser mint** (Envoyage), the *no-mint-API*
+  path. For a **dashboard-only** provider (no management API to mint a token), the daemon drives the
+  provider's **web console with a real browser** to create + read back the key. It drives **headless
+  until it can't**, then STOPS at any genuine human wall — **login / CAPTCHA / OTP**: the human
+  solves it in the **live view**, and the agent is **structurally blind** to the password (Envoyage
+  blanks the screenshot on a password page, so the model gets text only). A browser mint creates a
+  real credential, so it is consequential: it comes back `needs-confirm` and is **parked under an
+  unforgeable nonce** — the agent can never self-approve. On the human's approval (`POST /api/action`
+  with the nonce) the daemon drives the mint **locally** through the **detect → pause → wait-for-human
+  → resume** handoff state machine, captures the value daemon-side, and closes the loop through the
+  **same validate + sink** as an API mint. Returns the var **name** + status only — **never a value**.
+  OFF unless `RINGTAIL_BROWSER_MODE` is `local` (local Chromium, OSS) or `cloud` (a Cloudflare browser
+  via cdp-url, paid). The planner surfaces the matching var as the **`mint-via-browser`** bucket.
+
+## Connect providers
+
+- **`listConnectors()`** — the agent-guided onboarding surface. Lists the OAuth providers the user
+  can **connect** (id, `connected?`, `needsClientCreds?`, `scopes`, and the signup / api-keys URLs
+  to guide the user to), plus the already-connected providers (names + scopes + expiry). The
+  dashboard drives the actual connect (`POST /api/connect/start` opens the authorize URL); this
+  just lets the agent say "sign up / connect here". **Never returns a token.**
 
 ## Chat (the direction channel)
 

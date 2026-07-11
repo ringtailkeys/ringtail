@@ -4,17 +4,22 @@ import { basename, join } from "node:path";
 import { getEnv } from "@ringtail/config";
 import {
   approveMintAction,
+  approveMintViaBrowser,
+  approveProvision,
   connectionMap,
   defaultEnvironment,
+  envoyageWsUrl,
   gridFromExample,
   gridSeed,
+  isBatchNonce,
+  isBrowserNonce,
   provisionCredential,
   reuseKnownCredentials,
 } from "@ringtail/core";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { clearSession, getSession, listRootAccounts, putRoot, putSession } from "@ringtail/store";
+import { addRoot, clearSession, getSession, listRoots, putRoot, putSession } from "@ringtail/store";
 import { runAction } from "./action";
 import { detectAgents } from "./agents";
 import {
@@ -26,6 +31,7 @@ import {
   verifyOtp,
 } from "./control-plane";
 import { buildMcpServer } from "./mcp";
+import { connectStatus, connectedHtml, handleCallback, startConnect } from "./oauth";
 import { scanProjects } from "./projects";
 import { DaemonStore } from "./state";
 import { applyStep } from "./submit";
@@ -143,8 +149,24 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
   app.get("/health", (c) => c.json({ ok: true }));
   app.get("/api/status", (c) => c.json({ providers: connectionMap() }));
   app.get("/oauth/callback", async (c) => {
+    // The OAuth "Connect a provider" flow (PRD §4.9) owns this route when `state` matches
+    // a pending PKCE connect: exchange the code, vault the grant value-free, render a
+    // close-tab page. A non-matching state falls through to the legacy mock-recipe path
+    // below (unchanged) — so this one route carries both without a breaking change.
+    const oauthState = c.req.query("state");
+    try {
+      const done = await handleCallback(c.req.query("code"), oauthState);
+      if (done) return c.html(connectedHtml(done.provider));
+    } catch (err) {
+      return c.html(
+        `<!doctype html><p>Connect failed: ${
+          err instanceof Error ? err.message : String(err)
+        }. You can close this tab.</p>`,
+        400,
+      );
+    }
     const recipe = c.req.query("recipe") ?? "mock";
-    const state = c.req.query("state") ?? null;
+    const state = oauthState ?? null;
     try {
       const report = await provisionCredential(recipe, { env: defaultEnvironment() });
       return c.json({
@@ -279,23 +301,62 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
     }
   });
 
-  // POST /api/root — the DASHBOARD submits a per-account ROOT key (the master key
-  // that MINTS other keys). Same trust path as a paste: user → daemon → the global
-  // ~/.ringtail vault; the AGENT never submits or sees a root key. Body
-  // `{ providerAccount, value }`. The value is stored 0600 and NEVER echoed — the
-  // response carries the provider(+account) NAME only (check:no-leak stays green).
-  // Token-gated like /mcp.
+  // POST /api/root — the DASHBOARD submits a ROOT key (the master key that MINTS other
+  // keys). Same trust path as a paste: user → daemon → the global ~/.ringtail vault; the
+  // AGENT never submits or sees a root key. Two body shapes:
+  //   { provider, value, label?, account? } → a NAMED root in the multi-root registry
+  //       (PRD §4.4) — a provider can hold many (e.g. "prod" + "staging"), told apart by label.
+  //   { providerAccount, value }            → the legacy single-root path (upsert), kept working.
+  // The value is stored 0600 and NEVER echoed — the response carries the value-free registry
+  // (ids/labels/accounts, no values) so check:no-leak stays green. Token-gated like /mcp.
   app.post("/api/root", async (c) => {
     if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
     const body = (await c.req.json().catch(() => ({}))) as {
       providerAccount?: string;
+      provider?: string;
+      label?: string;
+      account?: string;
       value?: string;
     };
-    if (!body.providerAccount || !body.value) {
-      return c.json({ error: "providerAccount and value required" }, 400);
+    if (!body.value || (!body.provider && !body.providerAccount)) {
+      return c.json({ error: "provider (or providerAccount) and value required" }, 400);
     }
-    putRoot(body.providerAccount, body.value); // value → disk, never returned
-    return c.json({ ok: true, providerAccount: body.providerAccount, roots: listRootAccounts() });
+    if (body.provider) {
+      // Named-root registry path — always ADDS (a provider can hold several).
+      addRoot({
+        provider: body.provider,
+        value: body.value,
+        ...(body.label ? { label: body.label } : {}),
+        ...(body.account ? { account: body.account } : {}),
+      }); // value → disk, never returned
+    } else {
+      putRoot(body.providerAccount as string, body.value); // legacy single-root upsert
+    }
+    return c.json({ ok: true, roots: listRoots() });
+  });
+
+  // ── OAuth "Connect a provider" (PRD §4.9) — loopback redirect + PKCE ─────────
+  // POST /api/connect/start { provider } → generate PKCE + state, build the provider's
+  // authorize URL against THIS daemon's loopback /oauth/callback, park the verifier+state
+  // in memory, and return { authorizeUrl } for the dashboard to open. Value-free: no token
+  // exists yet. A provider missing client creds returns a plain 400 (never crashes).
+  app.post("/api/connect/start", async (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => ({}))) as { provider?: string };
+    if (!body.provider) return c.json({ error: "provider required" }, 400);
+    const { authorizeUrl, error } = startConnect(body.provider, new URL(c.req.url).origin);
+    if (error) return c.json({ error }, 400);
+    return c.json({ authorizeUrl });
+  });
+
+  // GET /api/connect/status → connected providers (NAMES + scopes + expiry, never a token)
+  // + the connector catalogue (signup / api-keys URLs + needs-creds flags) so the dashboard
+  // and the agent can guide "sign up / manage keys here". Also `roots` — the value-free
+  // named-root registry (ids/labels/accounts, NEVER a value) so the dashboard can answer
+  // "do I have a root key for this provider?" at a glance. Token-gated like every /api route.
+  app.get("/api/connect/status", (c) => {
+    if (bearer(c) !== token) return c.json({ error: "unauthorized" }, 401);
+    return c.json({ ...connectStatus(), roots: listRoots() });
   });
 
   // POST /api/chat — the USER → agent direction channel. The user types in the
@@ -323,19 +384,76 @@ export function createDaemon(opts: DaemonOpts = {}): Daemon {
       id?: string;
       confirmed?: boolean;
       nonce?: string;
+      selection?: { resource: string; permission: string; expiry?: string; rootId?: string };
+      /** BATCH PROVISION: optional multi-root picks (varName → root id) for the parked batch. */
+      rootSelections?: Record<string, string>;
     };
     // Approve a parked consequential mint by its server nonce — the UNFORGEABLE human
     // channel. The agent never received this nonce (it went to the dashboard over SSE),
-    // so it cannot self-approve the write it proposed. Executes with confirmed:true.
+    // so it cannot self-approve the write it proposed. Executes with confirmed:true. For a
+    // GUIDED mint (PRD §4.5) the human's {resource, permission, expiry} selection rides
+    // alongside the nonce; approveMintAction validates it against the discovered options and
+    // scopes the mint to exactly that pick (least-privilege), never a blanket permission.
     if (body.nonce) {
-      const result = await approveMintAction(body.nonce);
+      // BATCH PROVISION (the North Star): a batch nonce covers N mint/wire actions under ONE
+      // approval — route it to approveProvision, which runs each through the same mint gate and
+      // returns a value-free result per action. The dashboard clears the card + flips each minted
+      // cell. Partial success is fine (some minted, some no-root).
+      if (isBatchNonce(body.nonce)) {
+        const out = await approveProvision(body.nonce, body.rootSelections);
+        if ("rejected" in out) return c.json({ status: "rejected", reason: out.rejected });
+        store.clearPendingMint(body.nonce);
+        for (const r of out.results) {
+          if (r.status === "minted" || r.status === "partial") {
+            store.markMinted(r.providerAccount, "local");
+          }
+        }
+        return c.json({ results: out.results });
+      }
+      // BROWSER MINT (Envoyage): a browser nonce drives the provider's web console locally (the
+      // daemon lazily spawns Envoyage in `local` mode / connects the hosted engine in `cloud`),
+      // pausing for the human to solve any login in the live view. Same value-free close as a mint.
+      if (isBrowserNonce(body.nonce)) {
+        // Open the live-view card BEFORE the mint runs so the cockpit can watch (provider + WS URL
+        // come from the parked mint + config). deps wire the handoff state machine → the SSE
+        // snapshot: `onState` advances DRIVING → HUMAN_NEEDED → PAUSED → RESUMED (the "your turn"
+        // moment), `onNarrate` streams the Rocco-voice action bubbles. VALUE-FREE — no frame bytes
+        // or minted value ride here; frames stream out-of-band over the WS.
+        const parked = store.snapshot().pendingMints.find((p) => p.nonce === body.nonce);
+        store.setBrowserSession({
+          id: body.nonce,
+          provider: parked?.providerAccount ?? "",
+          wsUrl: envoyageWsUrl(),
+          state: "DRIVING",
+          bubbles: [],
+        });
+        const result = await approveMintViaBrowser(body.nonce, {
+          onState: (s, ctx) => store.setBrowserState(s, ctx?.reason),
+          onNarrate: (text, handoff) =>
+            store.pushBrowserBubble({ text, ...(handoff ? { handoff } : {}) }),
+        });
+        if (result.status !== "rejected") store.clearPendingMint(body.nonce);
+        if (result.status === "minted") store.markMinted(result.providerAccount, "local");
+        // Terminal sweep: keep the card a beat with its final pose (success/error), unless the mint
+        // was reused/rejected (nothing drove) → just clear it.
+        if (result.status === "minted") store.finishBrowserSession("minted");
+        else if (result.status === "failed" || result.status === "wrong-scope")
+          store.finishBrowserSession("failed");
+        else store.setBrowserSession(null);
+        return c.json(result);
+      }
+      const result = await approveMintAction(body.nonce, body.selection);
       if (result.status !== "rejected") store.clearPendingMint(body.nonce);
       // P1: the human approved a real mint → flip its grid cell to validated so the mint
       // always shows in the grid without the agent calling updateStatus. env defaults to
       // `local` (the MVP + the mintKey tool's default). ponytail: approveMintAction returns
       // only the value-free MintResult (no env); a deployed-env mint's exact cell still
       // needs updateStatus. Thread env through PendingMint/MintResult if that matters.
-      if (result.status === "minted") store.markMinted(result.providerAccount, "local");
+      // `minted` = a mint or a clean rotation (done); `partial` = a rotation whose new key is
+      // live but the old one wasn't revoked — the new key still works, so flip the cell.
+      if (result.status === "minted" || result.status === "partial") {
+        store.markMinted(result.providerAccount, "local");
+      }
       return c.json(result);
     }
     if (!body.id) return c.json({ error: "id required" }, 400);

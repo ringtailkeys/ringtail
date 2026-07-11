@@ -1,41 +1,47 @@
 import { Badge, Button, Card, Eyebrow, Rocco, font } from "@ringtail/ui";
+import type { RootInfo } from "@ringtail/core";
 import { type CSSProperties, useState } from "react";
 import { submitRoot } from "../live";
 
 /**
  * The root-key intake — the ONE human moment (PRD §"Root keys — the one human
- * moment"). The user pastes a per-ACCOUNT master key (the key that MINTS other
- * keys) for one provider; it flows user → daemon → the GLOBAL ~/.ringtail vault,
- * exactly like a `paste` step and NEVER through the agent. Stored once, reused
- * across every repo + env; the agent authors `mintKey` actions that spend it, but
- * never submits or sees it.
+ * moment"). The user pastes an account MASTER key (the key that MINTS other keys)
+ * for a provider; it flows user → daemon → the GLOBAL ~/.ringtail vault, exactly like
+ * a `paste` step and NEVER through the agent. Stored once, reused across every repo +
+ * env; the agent authors `mintKey` actions that spend it, but never submits or sees it.
  *
- * Value-free by construction: on success we show WHICH provider accounts now hold a
- * root (names only, from the daemon's `roots` list) — never a value. The input is a
- * password field with the persistent "🔒 goes to Ringtail" affordance.
+ * MULTI-ROOT (PRD §4.4): a provider can hold MANY roots — an optional label (e.g.
+ * "prod"/"staging") distinguishes siblings, so several projects/accounts are all set up,
+ * not just one. The mint flow later asks WHICH to spend.
+ *
+ * Value-free by construction: on success we show WHICH roots are now held (labels +
+ * accounts, from the daemon's value-free `roots` list) — never a value. The key input is
+ * a password field with the persistent "🔒 goes to Ringtail" affordance.
  */
 export function RootIntake({ live }: { live?: boolean }) {
-  const [account, setAccount] = useState("");
+  const [provider, setProvider] = useState("");
+  const [label, setLabel] = useState("");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
-  const [roots, setRoots] = useState<string[]>([]);
+  const [roots, setRoots] = useState<RootInfo[]>([]);
 
   async function submit() {
-    if (!live || !account.trim() || !value) return;
+    if (!live || !provider.trim() || !value) return;
     setBusy(true);
     try {
       // The value leaves the browser ONLY here — straight to the daemon vault. It
       // never touches the agent, and we drop it from state right after the POST.
-      const r = await submitRoot(account.trim(), value);
+      const r = await submitRoot(provider.trim(), value, { label: label.trim() || undefined });
       setRoots(r.roots);
       setValue("");
-      setAccount("");
+      setLabel("");
+      setProvider("");
     } finally {
       setBusy(false);
     }
   }
 
-  const canSubmit = Boolean(live) && Boolean(account.trim()) && Boolean(value) && !busy;
+  const canSubmit = Boolean(live) && Boolean(provider.trim()) && Boolean(value) && !busy;
 
   return (
     <Card style={{ marginBottom: 20 }}>
@@ -60,14 +66,21 @@ export function RootIntake({ live }: { live?: boolean }) {
             style={{
               display: "grid",
               gap: 8,
-              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1.6fr)",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)",
             }}
           >
             <input
               placeholder="provider (e.g. resend)"
-              value={account}
+              value={provider}
               disabled={!live || busy}
-              onChange={(e) => setAccount(e.target.value)}
+              onChange={(e) => setProvider(e.target.value)}
+              style={inputStyle}
+            />
+            <input
+              placeholder="label (optional, e.g. prod)"
+              value={label}
+              disabled={!live || busy}
+              onChange={(e) => setLabel(e.target.value)}
               style={inputStyle}
             />
             <input
@@ -104,8 +117,10 @@ export function RootIntake({ live }: { live?: boolean }) {
                 roots held:
               </span>
               {roots.map((r) => (
-                <Badge key={r} tone="berry">
-                  {r}
+                <Badge key={r.id} tone="berry">
+                  {r.provider}
+                  {r.label ? ` · ${r.label}` : ""}
+                  {r.account ? ` (${r.account})` : ""}
                 </Badge>
               ))}
             </div>
