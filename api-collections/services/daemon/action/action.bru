@@ -1,0 +1,22 @@
+meta {
+  name: Run action
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/action
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "id": "action-id",
+    "confirmed": false
+  }
+}

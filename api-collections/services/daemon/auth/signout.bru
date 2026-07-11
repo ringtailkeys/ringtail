@@ -1,0 +1,15 @@
+meta {
+  name: Sign out
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/signout
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

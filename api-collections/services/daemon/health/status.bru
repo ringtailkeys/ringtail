@@ -1,0 +1,15 @@
+meta {
+  name: Provider status
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

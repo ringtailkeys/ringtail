@@ -1,0 +1,22 @@
+meta {
+  name: Submit root key
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/root
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "providerAccount": "stripe",
+    "value": "rk_live_..."
+  }
+}

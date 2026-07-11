@@ -1,0 +1,21 @@
+meta {
+  name: Sign in (send OTP)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/signin
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "email": "you@example.com"
+  }
+}

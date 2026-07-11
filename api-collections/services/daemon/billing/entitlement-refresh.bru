@@ -1,0 +1,15 @@
+meta {
+  name: Refresh entitlement
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/entitlement/refresh
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

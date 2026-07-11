@@ -1,0 +1,15 @@
+meta {
+  name: Billing portal
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/portal
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}

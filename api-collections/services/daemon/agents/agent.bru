@@ -1,0 +1,21 @@
+meta {
+  name: Set agent
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/agent
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "id": "claude-code"
+  }
+}
