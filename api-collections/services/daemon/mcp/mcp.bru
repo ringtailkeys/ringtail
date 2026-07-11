@@ -1,0 +1,23 @@
+meta {
+  name: MCP tools/list
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }
+}

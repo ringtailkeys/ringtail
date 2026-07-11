@@ -1,0 +1,21 @@
+meta {
+  name: Chat to agent
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/chat
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "text": "connect stripe next"
+  }
+}

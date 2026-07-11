@@ -1,0 +1,21 @@
+meta {
+  name: Set project
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/api/project
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "path": "/path/to/project"
+  }
+}

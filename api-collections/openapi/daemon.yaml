@@ -1,0 +1,294 @@
+openapi: 3.1.0
+info:
+  title: Ringtail daemon — local machine surface + MCP
+  version: 0.0.0
+  description: >
+    The LOCAL daemon (`@ringtail/daemon`, `ringtail up`). Binds 127.0.0.1 only, zero
+    telemetry. Serves the dashboard's HTTP API, the MCP server over Streamable HTTP at
+    `/mcp`, and a live SSE stream at `/events`. Every `/api/*` route and `/mcp` are gated
+    by the per-boot session token (`Authorization: Bearer <token>`); `/events` takes the
+    token as a query param. This is a MINIMAL starter derived from
+    `services/daemon/src/index.ts` — keep it in lockstep with the code (see CLAUDE.md
+    "Docs are part of done"). Request/response schemas are documented to the depth the
+    starter needs; deepen them as the surface grows.
+servers:
+  - url: http://127.0.0.1:{port}
+    description: Loopback daemon. `port` = $DAEMON_PORT (or $PORT), printed on the boot line.
+    variables:
+      port:
+        default: "0"
+        description: The daemon's bound port — never hardcode it; read it from the boot line / $DAEMON_PORT.
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: The per-boot session token minted by the daemon and printed on the boot line.
+security:
+  - sessionToken: []
+paths:
+  /health:
+    get:
+      summary: Liveness probe (unauthenticated)
+      security: []
+      responses:
+        "200":
+          description: Daemon is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+  /api/status:
+    get:
+      summary: Per-provider connection map
+      responses:
+        "200":
+          description: Provider → connection status map
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { providers: { type: object } }
+  /api/session:
+    get:
+      summary: Hand the loopback dashboard its session token
+      responses:
+        "200":
+          description: The session token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { token: { type: string } }
+  /oauth/callback:
+    get:
+      summary: OAuth recipe callback — provisions a credential
+      security: []
+      parameters:
+        - { name: recipe, in: query, schema: { type: string }, description: "Recipe id (default: mock)" }
+        - { name: state, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Provision report (status, recipe, scopes, missing, keys) }
+        "400": { description: Provisioning failed }
+  /api/signin:
+    post:
+      summary: Email a one-time sign-in code (app edition only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties: { email: { type: string, format: email } }
+      responses:
+        "200": { description: Code sent }
+        "400": { description: email required / send failed }
+        "401": { description: Bad session token }
+        "404": { description: Not app edition }
+  /api/verify:
+    post:
+      summary: Verify the OTP → persist the account session privately (app edition only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, otp]
+              properties:
+                email: { type: string, format: email }
+                otp: { type: string }
+      responses:
+        "200": { description: Verified (session token never echoed) }
+        "400": { description: email and otp required / verify failed }
+        "401": { description: Bad session token }
+        "404": { description: Not app edition }
+  /api/signout:
+    post:
+      summary: Drop the local account session
+      responses:
+        "200": { description: Signed out }
+        "401": { description: Bad session token }
+  /api/checkout:
+    post:
+      summary: Create a Dodo checkout session URL (app edition, signed in)
+      responses:
+        "200":
+          description: Checkout URL
+          content:
+            application/json:
+              schema: { type: object, properties: { url: { type: string } } }
+        "401": { description: Bad session token / not signed in }
+        "404": { description: Not app edition }
+  /api/portal:
+    post:
+      summary: Create a Dodo billing-portal session URL (app edition, signed in)
+      responses:
+        "200":
+          description: Portal URL
+          content:
+            application/json:
+              schema: { type: object, properties: { url: { type: string } } }
+        "401": { description: Bad session token / not signed in }
+        "404": { description: Not app edition }
+  /api/entitlement/refresh:
+    post:
+      summary: Re-pull entitlement and publish tier/usage over SSE (app edition)
+      responses:
+        "200":
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean }, tier: { type: string, enum: [free, pro] } }
+        "401": { description: Bad session token }
+        "404": { description: Not app edition }
+  /api/step:
+    post:
+      summary: Browser paste path — value flows user → daemon → store, never the agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stepId]
+              properties:
+                stepId: { type: string }
+                value: { type: string, description: "Secret value — stored, never echoed back" }
+      responses:
+        "200": { description: Step result (status + var NAME only, never the value) }
+        "400": { description: stepId required / apply failed }
+        "401": { description: Bad session token }
+  /api/root:
+    post:
+      summary: Submit a per-account ROOT key (the master key that mints others)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providerAccount, value]
+              properties:
+                providerAccount: { type: string }
+                value: { type: string, description: "Root secret — stored 0600, never echoed" }
+      responses:
+        "200":
+          description: Stored (response carries the provider/account NAME + root list only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  providerAccount: { type: string }
+                  roots: { type: array, items: { type: string } }
+        "400": { description: providerAccount and value required }
+        "401": { description: Bad session token }
+  /api/chat:
+    post:
+      summary: User → agent intent channel (text only, never a secret)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties: { text: { type: string } }
+      responses:
+        "200": { description: Queued for the agent }
+        "400": { description: text required }
+        "401": { description: Bad session token }
+  /api/action:
+    post:
+      summary: Browser approve path for a mapped action (or approve a parked mint by nonce)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string, description: "Action id (required unless nonce is given)" }
+                confirmed: { type: boolean, description: "Set after the destructive two-step gate" }
+                nonce: { type: string, description: "Server nonce to approve a parked consequential mint" }
+      responses:
+        "200": { description: Action / mint result }
+        "400": { description: id required / action failed }
+        "401": { description: Bad session token }
+  /api/agents:
+    get:
+      summary: Detected coding-agent CLIs + their exact MCP-connect command
+      responses:
+        "200":
+          description: Agents list
+          content:
+            application/json:
+              schema: { type: object, properties: { agents: { type: array, items: { type: object } } } }
+        "401": { description: Bad session token }
+  /api/agent:
+    post:
+      summary: Connect (or clear) the coding agent
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { id: { type: string, description: "Agent id or 'manual'; empty body clears it" } }
+      responses:
+        "200": { description: Agent set or cleared }
+        "401": { description: Bad session token }
+  /api/projects:
+    get:
+      summary: Candidate local dirs that carry a .env.example
+      responses:
+        "200":
+          description: Projects list (names + paths only)
+          content:
+            application/json:
+              schema: { type: object, properties: { projects: { type: array, items: { type: object } } } }
+        "401": { description: Bad session token }
+  /api/project:
+    post:
+      summary: Set (or clear) the active project; rebuilds the grid from its .env.example
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { path: { type: string, description: "Dir with a .env.example; empty body clears it" } }
+      responses:
+        "200": { description: Project set or cleared }
+        "400": { description: no .env.example at that path }
+        "401": { description: Bad session token / not signed in }
+        "402": { description: Free limit reached (app edition) }
+  /mcp:
+    post:
+      summary: MCP server over Streamable HTTP (JSON-RPC 2.0, stateless JSON mode)
+      description: >
+        The agent's MCP entry point. Speaks MCP JSON-RPC (initialize, tools/list,
+        tools/call, …). Tool signatures are the contract — keep them in sync here and in
+        the docs when they change. Token-gated like every /api route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "MCP JSON-RPC 2.0 request" }
+      responses:
+        "200": { description: MCP JSON-RPC 2.0 response }
+        "401": { description: Bad session token }
+  /events:
+    get:
+      summary: Live state → dashboard (Server-Sent Events)
+      description: Token passed as a query param (EventSource can't set Authorization).
+      security: []
+      parameters:
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "text/event-stream of DaemonStore snapshots" }
+        "401": { description: Bad token }

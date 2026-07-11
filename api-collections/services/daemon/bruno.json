@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "name": "ringtail-daemon",
+  "type": "collection",
+  "ignore": ["node_modules", ".git"]
+}

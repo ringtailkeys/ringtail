@@ -69,6 +69,19 @@ and `apps/docs` in the SAME change. Docs live with the code; stale docs are a bu
 it via `check:docs` (a `docs-sync` test derives the surface from the code and fails naming any
 undocumented item, then `apps/docs` builds for broken-link/MDX safety).
 
+The same "docs in the SAME change" law covers two more surfaces:
+
+- **`CHANGELOG.md`** — every user-visible change gets an entry under `## [Unreleased]`, in
+  [Keep a Changelog](https://keepachangelog.com) format with [SemVer](https://semver.org)
+  versions. `[Unreleased]` accumulates entries between releases; a release just renames it to
+  the version. A stale changelog is a bug like any other stale doc.
+- **API collections** — when the HTTP/MCP surface changes (a daemon route, a request/response
+  shape, auth, or an MCP tool signature) update BOTH the **OpenAPI** spec
+  (`api-collections/openapi/daemon.yaml`) AND the **Bruno** collection
+  (`api-collections/services/daemon/` — one `.bru` per route, grouped by resource) in lockstep
+  with the code. Specs + Bruno share the one API-contract home, `api-collections/`. The spec is
+  the contract; drift is a bug. If a change touches no HTTP/MCP surface, this clause doesn't apply.
+
 ## Package manager & dev
 
 - **bun** only (never npm). `bun install` at root.

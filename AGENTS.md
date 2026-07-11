@@ -35,7 +35,10 @@ Full rule in [`CLAUDE.md`](./CLAUDE.md).
 If you change the public surface — CLI commands, MCP tools, the `Wizard`/`Step`/`Action`
 contract, the `.env.example` manifest, or the onboarding flow — you MUST update `README.md`
 and `apps/docs` in the SAME change. Docs live with the code; stale docs are a bug. CI enforces
-it via `check:docs`. Full rule in [`CLAUDE.md`](./CLAUDE.md).
+it via `check:docs`. Also carry, in the SAME change: a **`CHANGELOG.md`** entry under
+`## [Unreleased]` (Keep a Changelog + SemVer) for every user-visible change, and — when the
+HTTP/MCP surface changes — both the **OpenAPI** spec (`api-collections/openapi/daemon.yaml`) and
+the **Bruno** collection (`api-collections/services/daemon/`) in lockstep. Full rule in [`CLAUDE.md`](./CLAUDE.md).
 
 bun only. Dev via `./tilt_up.sh` (never `tilt up`). Verify with `bun run check`.
 Canonical domain: **ringtailkeys.com**.
