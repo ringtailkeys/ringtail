@@ -148,8 +148,10 @@ none of them dead-end.
    the provider's web console with a real browser (`mintViaBrowser`, Envoyage): it works headless
    until it hits a genuine human wall (login/CAPTCHA/OTP), then **hands off to you in a live view** —
    you type the password, the agent stays structurally blind to it — and resumes to mint + file the
-   key through the same validate + sink. Off by default (`RINGTAIL_BROWSER_MODE=off`); flip it to
-   `local` (a local Chromium) or `cloud` (a Cloudflare browser) to enable.
+   key through the same validate + sink. It runs on the [`@envoyage/browser`](https://www.npmjs.com/package/@envoyage/browser)
+   engine — the engine owns the driving and the password-blind boundary. Off by default
+   (`RINGTAIL_BROWSER_MODE=off`); flip it to `local` (a local `envoyage serve` + Chromium, OSS) or
+   `cloud` (the hosted Envoyage endpoint, paid) — same SDK client, only the endpoint differs.
 4. **Recover** — a wrong scope or a failed action is a *first-class state*, not an exception.
    Ringtail explains it in plain language and routes to the fix; the agent re-plans into a
    recovery wizard. Every failure surfaces a cause *and* a next step.

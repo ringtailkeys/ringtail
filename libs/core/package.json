@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@envoyage/browser": "~0.1.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@ringtail/config": "workspace:*",
     "@ringtail/recipes": "workspace:*",
