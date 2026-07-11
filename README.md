@@ -16,6 +16,16 @@ Canonical home: **[ringtailkeys.com](https://ringtailkeys.com)** · Docs:
 
 ---
 
+## When to use Ringtail
+
+**Use Ringtail when:**
+- You're starting a new project and don't want to re-extract the same API keys (Resend, Cloudflare, Vercel, OpenAI, Stripe, Neon…) — connect each provider once, then every new project provisions itself.
+- You want a coding agent (Claude Code, Cursor) to set up infra **without ever handling the secret values**.
+- You want per-project, least-privilege scoped keys instead of one reused god-token.
+- You need to rotate a key (mint-new → reconfigure → revoke-old) without breaking production.
+
+**Not the right fit when:** you want a hosted secrets vault with team RBAC, audit logs, and compliance, or runtime-brokered dynamic secrets — pair Ringtail with Doppler / Infisical / Vault. Ringtail *acquires and mints* keys; it isn't the vault.
+
 ## Quickstart
 
 Ringtail isn't published to a package registry yet — run it from the repo:
