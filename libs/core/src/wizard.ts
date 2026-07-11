@@ -225,6 +225,19 @@ export interface BrowserSession {
   state: HandoffState;
   /** Envoyage's canned handoff reason when state is HUMAN_NEEDED/PAUSED (e.g. "password"). */
   reason?: string;
+  /** Rocco-voice action narration, appended as the mint drives (the cockpit's SSE bubbles).
+   * VALUE-FREE — tool + non-secret label only, never a minted value (see stepLabel). */
+  bubbles?: BrowserBubble[];
+  /** Set once the mint finishes so the card can play its terminal sweep + Rocco pose:
+   * `minted` → success, `failed` → error. Absent while still driving. */
+  outcome?: "minted" | "failed";
+}
+
+/** One SSE action bubble — a value-free narration line + whether it's the orange handoff bubble. */
+export interface BrowserBubble {
+  text: string;
+  /** The orange "your turn" bubble (a human wall) vs a plain green driving bubble. */
+  handoff?: boolean;
 }
 
 export interface DaemonSnapshot {

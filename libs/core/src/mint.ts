@@ -1190,6 +1190,9 @@ export function isBrowserNonce(nonce: string): boolean {
 export interface BrowserMintDeps {
   connect?: () => Promise<BrowserMinter>;
   onState?: (s: HandoffState, ctx?: { reason?: string }) => void;
+  /** Rocco-voice narration → the cockpit's SSE action bubbles (Increment 2). `handoff` marks the
+   * orange "your turn" bubble. Value-free (see envoyage.ts::stepLabel). */
+  onNarrate?: (text: string, handoff?: boolean) => void;
 }
 
 /**
@@ -1297,7 +1300,7 @@ export async function executeBrowserMint(
     };
   }
   try {
-    const driven = await driveBrowserMint(client, recipe, deps.onState);
+    const driven = await driveBrowserMint(client, recipe, deps.onState, deps.onNarrate);
     if ("error" in driven)
       return { providerAccount: provider, status: "failed", reason: driven.error };
     // Validate-after-mint when the provider offers a probe (best-effort: a pure dashboard-only

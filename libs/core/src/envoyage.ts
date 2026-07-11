@@ -208,6 +208,44 @@ export const browserRecipes: BrowserRecipe[] = [
   },
 ];
 
+/**
+ * A short Rocco-voice narration for one browser step — the backend-agnostic source of the cockpit's
+ * SSE action bubbles (Increment 2). VALUE-FREE by construction: it names the TOOL + a non-secret
+ * label (the click text, the field NAME, the url host) — never a minted value. `browser_read_page`
+ * reads the fresh key DAEMON-LOCAL, so its line is deliberately value-free ("reading the new key…").
+ */
+export function stepLabel(step: BrowserStep): string {
+  const a = step.args ?? {};
+  const str = (v: unknown): string => (typeof v === "string" ? v : "");
+  switch (step.tool) {
+    case "browser_open": {
+      const url = str(a.url);
+      let host = url;
+      try {
+        host = new URL(url).host;
+      } catch {
+        /* keep the raw string */
+      }
+      return `opening ${host || "the dashboard"}…`;
+    }
+    case "browser_click":
+      return `clicking “${str(a.text) || "the button"}”…`;
+    case "browser_form_input":
+      return `typing the ${str(a.label) || "field"}…`;
+    case "browser_read_page":
+      return "reading the new key…";
+    default:
+      return `${step.tool}…`;
+  }
+}
+
+/** The local Envoyage live-view WebSocket URL (`--ws-port`, loopback) — where the cockpit connects
+ * to paint frames (Increment 2). Mirrors the port default `resolveEndpoint` spawns Envoyage with. */
+export function envoyageWsUrl(): string {
+  const wsPort = process.env.RINGTAIL_ENVOYAGE_WS_PORT ?? "8800";
+  return `ws://127.0.0.1:${wsPort}`;
+}
+
 /** The browser recipe that drives `varName`, or undefined. Names only. */
 export function browserRecipeFor(varName: string): BrowserRecipe | undefined {
   const up = varName.toUpperCase();
@@ -272,6 +310,9 @@ export async function driveBrowserMint(
   client: BrowserMinter,
   recipe: BrowserRecipe,
   onState?: (s: HandoffState, ctx?: { reason?: string }) => void,
+  /** Rocco-voice narration for the cockpit's SSE action bubbles (Increment 2). `handoff` marks the
+   * orange "your turn" bubble. VALUE-FREE — see `stepLabel`. */
+  onNarrate?: (text: string, handoff?: boolean) => void,
 ): Promise<{ value: string; keyId?: string } | { error: string }> {
   let value: string | undefined;
   let keyId: string | undefined;
@@ -283,13 +324,20 @@ export async function driveBrowserMint(
       };
     }
     onState?.("DRIVING");
+    onNarrate?.(stepLabel(step));
     let res = await client.call(step.tool, step.args);
     // Envoyage auto-detect (password/CAPTCHA/Cloudflare/OAuth) OR a proactive request → handoff.
     if (res.human || res.paused) {
-      onState?.("HUMAN_NEEDED", res.human?.reason ? { reason: res.human.reason } : undefined);
+      const reason = res.human?.reason;
+      onState?.("HUMAN_NEEDED", reason ? { reason } : undefined);
+      onNarrate?.(
+        `your turn — ${res.human?.instructions ?? "clear the login in the panel, then hit ▶ Continue"}`,
+        true,
+      );
       const resumed = await awaitHuman(client, onState);
       if (!resumed) return { error: "browser handoff timed out waiting for the human" };
       onState?.("RESUMED");
+      onNarrate?.("got it — taking over from here.");
       // Re-run the step that hit the wall now that the human cleared it.
       res = await client.call(step.tool, step.args);
       if (res.human || res.paused) return { error: "still blocked after handoff — aborting mint" };

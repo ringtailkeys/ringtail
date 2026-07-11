@@ -18,6 +18,7 @@ import {
 } from "@ringtail/ui";
 import { Fragment, useEffect, useState } from "react";
 import { AgentPicker } from "./cockpit/AgentPicker";
+import { BrowserHandoff } from "./cockpit/BrowserHandoff";
 import { ChooseProject } from "./cockpit/ChooseProject";
 import { ConnectCommand } from "./cockpit/ConnectCommand";
 import { ConnectPanel } from "./cockpit/ConnectPanel";
@@ -280,6 +281,10 @@ function Cockpit({
         pending={snapshot.pendingMints}
         onApprove={live ? (nonce, selection) => void approveMint(nonce, selection) : undefined}
       />
+      {/* The live browser-mint card (Increment 2): Rocco drives the provider console, the human
+          steps in only for the password wall. Rides snapshot.browserSession off SSE; null when no
+          browser mint runs. Value-free — the agent never sees the password. */}
+      <BrowserHandoff session={snapshot.browserSession} />
       <LiveGrid grid={snapshot.grid} />
       <div
         style={{

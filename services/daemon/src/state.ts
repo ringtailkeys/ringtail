@@ -5,6 +5,7 @@ import {
   type Action,
   type ActiveProject,
   type AuthState,
+  type BrowserBubble,
   type BrowserSession,
   type ChatChoice,
   type ChatMessage,
@@ -95,6 +96,28 @@ export class DaemonStore {
   setBrowserState(state: HandoffState, reason?: string): void {
     if (!this.#browserSession) return;
     this.#browserSession = { ...this.#browserSession, state, ...(reason ? { reason } : {}) };
+    this.#emit();
+  }
+
+  /** Append one Rocco-voice narration bubble to the running session (the cockpit's SSE action
+   * bubbles). Value-free by shape — `driveBrowserMint`'s `onNarrate` feeds this. No-op if no
+   * session is live. */
+  pushBrowserBubble(bubble: BrowserBubble): void {
+    if (!this.#browserSession) return;
+    this.#browserSession = {
+      ...this.#browserSession,
+      bubbles: [...(this.#browserSession.bubbles ?? []), bubble],
+    };
+    this.#emit();
+  }
+
+  /** Mark the running session terminal (minted → success sweep, failed → error) so the card plays
+   * its final Rocco pose before the cockpit dismisses it. ponytail: the terminal card lingers in
+   * state until the next browser mint replaces it or the daemon restarts — add a
+   * /api/browser/dismiss if a stale terminal card on reload ever matters. No-op if no session. */
+  finishBrowserSession(outcome: "minted" | "failed"): void {
+    if (!this.#browserSession) return;
+    this.#browserSession = { ...this.#browserSession, state: "RESUMED", outcome };
     this.#emit();
   }
 
