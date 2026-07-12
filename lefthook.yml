@@ -1,8 +1,7 @@
 # Git hooks — the commit-boundary version of the boundary thesis. The boundary laws
 # are enforced in `lint` (Nx) and in review; this stops drift one step earlier: an
-# agent (or human) literally can't COMMIT unformatted / unlinted code, and can't PUSH
-# code that doesn't typecheck. Fast by construction — staged files only on commit, the
-# Nx-affected graph only on push.
+# agent (or human) literally can't COMMIT unformatted / unlinted code. Fast by
+# construction — staged files only on commit. No pre-push gate (see below).
 #
 # Enable once after `bun install`:  bunx lefthook install
 # Skip in a pinch:                  LEFTHOOK=0 git commit …   (or `git commit --no-verify`)
@@ -20,10 +19,11 @@ pre-commit:
       glob: "*.{ts,tsx,js,jsx,mjs,cjs}"
       run: bunx oxlint {staged_files}
 
-pre-push:
-  commands:
-    # Typecheck only the projects the push affects (Nx graph + cache).
-    # Guard: skip on the very FIRST push (no upstream ref to diff against yet) so a
-    # fresh repo or clone never hangs typechecking all projects cold. CI still runs it.
-    typecheck:
-      run: git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 && bunx nx affected -t typecheck || echo "→ no upstream yet — skipping pre-push typecheck (CI runs it)"
+# NO pre-push hook — deliberately. There WAS a `bunx nx affected -t typecheck` here; it
+# was removed 2026-07-12 after it repeatedly hung real pushes across this fleet: `nx
+# affected` deadlocked the Nx daemon 10+ min on worktree pushes, and on a cold cache it
+# blocked on Nx's interactive "Share usage data?" stdin prompt — a push has no TTY, so it
+# hung until killed. A minutes-long (or infinite) push gate trains people to `--no-verify`,
+# which is worse than no gate. Typecheck coverage lives in CI (ci.yml runs
+# `nx run-many -t typecheck` on every push/PR) and in editors. Don't re-add a pre-push
+# typecheck unless it's provably sub-30s cold from a fresh worktree.
