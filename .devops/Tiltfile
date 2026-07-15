@@ -173,7 +173,7 @@ local_resource(
 # which publishes on a Linux runner via OIDC Trusted Publishing (no stored token).
 # Manual only; each stage gates the next (&&, first failure aborts).
 #   preflight — typecheck+lint (nx) · no-leak · cli tests green, PLUS: clean git
-#     working tree AND on `master` (a release must be a reproducible commit).
+#     working tree AND on `main` (a release must be a reproducible commit).
 #   bump      — BUN-NATIVE (NOT `npm version`). `npm version` walks the whole
 #     workspace and chokes on `workspace:*` deps in sibling packages
 #     (`Unsupported URL Type "workspace:"`), so it can't run in this bun monorepo.
@@ -187,8 +187,8 @@ def release_cmd(bump):
     return (
         'cd ' + REPO_ROOT + ' && ' +
         'echo "-- preflight -----------------------------------------" && ' +
-        'if [ "$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then ' +
-        'echo "REFUSE: releases go from master (on $(git rev-parse --abbrev-ref HEAD))"; exit 1; fi && ' +
+        'if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then ' +
+        'echo "REFUSE: releases go from main (on $(git rev-parse --abbrev-ref HEAD))"; exit 1; fi && ' +
         'if [ -n "$(git status --porcelain)" ]; then ' +
         'echo "REFUSE: working tree not clean - commit or stash first"; exit 1; fi && ' +
         BUN + ' run check && ' +

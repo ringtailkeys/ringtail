@@ -97,10 +97,10 @@ Then **link the Trusted Publisher** on npm (this is what removes the need for a 
 
 ## The ongoing flow (every release after the bootstrap)
 
-1. Be on **`master`** with a **clean working tree**.
+1. Be on **`main`** with a **clean working tree**.
 2. Press the Tilt **`release`** button (or **`release-minor`** for a feature bump).
    It runs the preflight (typecheck + lint + no-leak + cli tests + clean-tree +
-   on-master), then `npm version patch|minor --tag-version-prefix=v`, then
+   on-main), then `npm version patch|minor --tag-version-prefix=v`, then
    `git push --follow-tags`.
 3. The pushed `v<x>` tag fires **`publish.yml`**, which: checks out, sets up Bun +
    Node with `npm@latest`, guards that the tag matches `packages/cli/package.json`

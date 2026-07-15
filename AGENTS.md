@@ -57,7 +57,7 @@ docs-sync + `apps/docs` builds). **CI never deploys and never publishes.** Do no
 The tool ships ONE npm package, **`ringtailkeys`** (`packages/cli`; every `libs/*` is
 `private`, nothing else publishes). Release is hands-free:
 
-- **Trigger:** the Tilt **`release`** / **`release-minor`** button (from `master`, clean
+- **Trigger:** the Tilt **`release`** / **`release-minor`** button (from `main`, clean
   tree) preflights, bumps + tags `v<x>`, and `git push --follow-tags`. The pushed `v*` tag
   fires `publish.yml` on a **Linux** runner (esbuild hangs on the dev mac).
 - **How it publishes:** `id-token: write` + `npm publish --provenance --access public`.

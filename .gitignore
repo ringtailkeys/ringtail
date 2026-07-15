@@ -17,3 +17,8 @@ tilt_modules/
 # Local ImmorTerm tool runtime state (rewritten constantly — never commit)
 .immorterm/*
 !.immorterm/project.json
+
+# Tauri desktop build output (generated — never commit)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
