@@ -22,3 +22,6 @@ tilt_modules/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
+
+# Large video masters (ProRes/alpha) — derived .webp is committed instead
+apps/.brand-assets/*.mov
