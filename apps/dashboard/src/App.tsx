@@ -217,7 +217,7 @@ function ConnectStep({ onConnect }: { onConnect: (id: string) => void }) {
           marginBottom: 20,
         }}
       >
-        <Rocco pose="waving" animated size={128} />
+        <Rocco hero size={128} />
         <p
           style={{
             fontFamily: font.mono,
@@ -437,7 +437,7 @@ function Connecting() {
         textAlign: "center",
       }}
     >
-      <Rocco pose="waving" animated size={128} />
+      <Rocco hero size={128} />
       <p style={{ fontFamily: font.ui, fontSize: 16, margin: 0 }}>
         Connecting to the local daemon…
       </p>

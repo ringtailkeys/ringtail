@@ -55,6 +55,12 @@ export const animKeyframes = `
 @media (prefers-reduced-motion: reduce) {
   .${ANIM_CLASS} { animation: none !important; opacity: 1 !important; transform: none !important; }
 }
+/* Rocco hero: the looping transparent WebP flattens to the static poster PNG under
+   reduced motion (Rocco.hero — see rocco.tsx). */
+@media (prefers-reduced-motion: reduce) {
+  .rocco-hero-anim { display: none !important; }
+  .rocco-hero-poster { display: block !important; }
+}
 `;
 
 /**

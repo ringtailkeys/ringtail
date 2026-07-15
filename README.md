@@ -1,6 +1,18 @@
-# Ringtail 🦝
+<p align="center">
+  <img src=".github/assets/hero.png" alt="Ringtail — Rocco the raccoon raids the token pages so you don't" width="900">
+</p>
 
-**The OSS raccoon that raids the token pages so you don't.**
+<h1 align="center">Ringtail 🦝</h1>
+
+<p align="center"><b>The OSS raccoon that raids the token pages so you don't.</b></p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-37b27e?style=flat-square" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/local--first-yes-f5a524?style=flat-square" alt="local-first">
+  <img src="https://img.shields.io/badge/telemetry-none-17110f?style=flat-square" alt="no telemetry">
+  <a href="https://www.npmjs.com/package/ringtailkeys"><img src="https://img.shields.io/npm/v/ringtailkeys?style=flat-square&color=37b27e&label=npm" alt="npm ringtailkeys"></a>
+  <a href="https://github.com/ringtailkeys/ringtail/stargazers"><img src="https://img.shields.io/github/stars/ringtailkeys/ringtail?style=flat-square&color=f5a524" alt="Star on GitHub"></a>
+</p>
 
 Ringtail is a **local, open-source, agent-orchestrated credential-provisioning tool**. Rocco —
 your coding agent's little raccoon — reads `.env.example` as the shopping list, raids each

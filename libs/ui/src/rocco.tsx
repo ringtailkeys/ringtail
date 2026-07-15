@@ -2,6 +2,8 @@ import type { CSSProperties } from "react";
 import { ANIM_CLASS } from "./anim";
 import chill from "./assets/rocco-chill.png";
 import error from "./assets/rocco-error.png";
+import heroPoster from "./assets/rocco-hero-poster.png";
+import heroWebp from "./assets/rocco-hero.webp";
 import mindblown from "./assets/rocco-mindblown.png";
 import success from "./assets/rocco-success.png";
 import waving from "./assets/rocco-waving.png";
@@ -49,6 +51,7 @@ export function Rocco({
   size = 120,
   framed = true,
   animated = false,
+  hero = false,
   style,
 }: {
   pose?: RoccoPose;
@@ -57,8 +60,35 @@ export function Rocco({
   framed?: boolean;
   /** Bring the pose alive with its idle loop (waving/cheer/shake/float). */
   animated?: boolean;
+  /** Swap to the always-looping transparent-alpha WebP (waving + breathing + blink) —
+   *  no card, sits straight on the page ground. `prefers-reduced-motion` falls back to
+   *  the static poster PNG (both handled below). Ignores `pose`/`framed`/`animated`. */
+  hero?: boolean;
   style?: CSSProperties;
 }) {
+  if (hero) {
+    return (
+      <span style={{ display: "inline-block", width: size, height: size, lineHeight: 0, ...style }}>
+        <img
+          src={heroWebp}
+          alt="Rocco, the Ringtail mascot, waving"
+          width={size}
+          height={size}
+          className="rocco-hero-anim"
+          style={{ display: "block", width: size, height: size, objectFit: "contain" }}
+        />
+        <img
+          src={heroPoster}
+          alt="Rocco, the Ringtail mascot, waving"
+          width={size}
+          height={size}
+          className="rocco-hero-poster"
+          style={{ display: "none", width: size, height: size, objectFit: "contain" }}
+        />
+      </span>
+    );
+  }
+
   const img = (
     <img
       src={POSES[pose]}

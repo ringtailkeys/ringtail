@@ -1,6 +1,7 @@
 {
   "name": "ringtail-monorepo",
   "private": true,
+  "license": "MIT",
   "workspaces": [
     "apps/*",
     "services/*",
