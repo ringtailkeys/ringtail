@@ -324,7 +324,9 @@ async function sendWithRoot(
   if (!res.ok) {
     const gap =
       res.status === 401 || res.status === 403
-        ? "root key lacks the required permission/scope"
+        ? usesRoot(action)
+          ? "root key lacks the required permission/scope"
+          : "action has no {{ROOT}} header — the root key was never sent (add e.g. Authorization: Bearer {{ROOT}})"
         : `provider returned HTTP ${res.status}`;
     let detail = "";
     try {

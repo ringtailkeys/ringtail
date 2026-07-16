@@ -11,9 +11,16 @@ makes it (see `CLAUDE.md` → "Docs are part of done — enforced"). A release r
 
 ## [Unreleased]
 
-Ringtail is pre-release — no versioned release has been cut yet. Track user-visible
-changes here (CLI commands, MCP tools, daemon routes, the `.env.example` manifest,
-onboarding) until the first tagged version.
+### Fixed
+
+- **The cockpit's live `/events` SSE stream no longer dies after 10 seconds.** Bun's default
+  `idleTimeout` was killing the long-lived stream (`ERR_INCOMPLETE_CHUNKED_ENCODING` in the
+  browser), leaving the dashboard blank or stale until refresh. The daemon now serves with
+  `idleTimeout: 0` (loopback-only bind, so unbounded idle is safe).
+- **A `mintKey` action authored without a `{{ROOT}}` header now says so.** A 401/403 from the
+  provider used to be reported as "root key lacks the required permission/scope" even when the
+  real cause was that no `{{ROOT}}` placeholder appeared in the action's headers, so the root
+  was never attached. The error now names the authoring gap and shows the fix.
 
 ### Changed
 

@@ -629,7 +629,10 @@ if (import.meta.main) {
   // Restore a persisted sign-in: pull the account's entitlement so a returning user
   // lands past the gate (or on sign-in if the session expired). Non-blocking.
   void refreshAuth(store);
-  const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch });
+  // idleTimeout 0: Bun's 10s default kills the long-lived /events SSE stream
+  // (ERR_INCOMPLETE_CHUNKED_ENCODING in the cockpit → blank grid). Local-only bind,
+  // so an unbounded idle connection is fine.
+  const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: app.fetch, idleTimeout: 0 });
   const origin = `http://127.0.0.1:${server.port}`;
   // The boot line — MCP URL + session token + dashboard. Bind is 127.0.0.1 only.
   // In served mode the dashboard is same-origin on this port; else it's the Vite dev URL.
