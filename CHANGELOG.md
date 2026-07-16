@@ -11,6 +11,8 @@ makes it (see `CLAUDE.md` → "Docs are part of done — enforced"). A release r
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-16
+
 ### Fixed
 
 - **The cockpit's live `/events` SSE stream no longer dies after 10 seconds.** Bun's default
