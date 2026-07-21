@@ -10,6 +10,17 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      // This app is a React-19 island (fumadocs 16 needs it); the rest of the monorepo is
+      // still React 18, so @types/react hoists to 18 at the repo root. Pin every react/
+      // react-dom type import in this program — including the ones inside fumadocs-ui's
+      // .d.ts — to the app-local 19 copy so ReactNode is one type, not two. Drop when the
+      // monorepo moves to React 19.
+      "react": [
+        "./node_modules/@types/react"
+      ],
+      "react-dom": [
+        "./node_modules/@types/react-dom"
       ]
     },
     "allowJs": true,
